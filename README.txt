@@ -1,13 +1,12 @@
-Today's Starry Sky v3 - Gyro mode
+Today's Starry Sky v4 - Gyro Rebuild
 
-GitHub Pages: upload index.html as the site root.
+GitHub Pages: upload index.html at repository root.
 
-Changes:
-- Added UI gyro toggle button
-- Gyro mode follows rear-camera direction using full 3-D device attitude
-- Handles zenith crossing and upside-down poses without azimuth singularity
-- Corrects screen rotation for portrait/landscape
-- Uses iOS webkitCompassHeading yaw correction when available
-- Uses current observation latitude/longitude from the main app
-- Retains the Safari canvas ghosting fix from v15
-- Moon and planets are included in gyro view
+Key changes:
+- rebuilt DeviceOrientation transform from W3C Z-X' -Y" convention
+- compass anchors alpha (yaw) rather than rear-camera azimuth
+- corrected screen-axis rotation
+- one focal length for both axes (no constellation stretching)
+- zenith-safe full 3D camera basis
+- canvas dimensions measured from actual CSS box for Safari
+- cardinal markers on horizon for field verification
