@@ -40,6 +40,20 @@ body{position:fixed;inset:0;overscroll-behavior:none;-webkit-user-select:none;us
   #locationBtn{margin-left:auto}
 }
 @media (max-width:360px){#locationBtn .long-label{display:none}}
+
+#gyroView{position:fixed;inset:0;z-index:25;background:#02050b;overflow:hidden;}
+#gyroView[hidden]{display:none}
+#gyroSky{position:absolute;inset:0;width:100%;height:100%;touch-action:none;}
+#gyroCross{position:absolute;left:50%;top:50%;width:20px;height:20px;transform:translate(-50%,-50%);pointer-events:none;opacity:.42;}
+#gyroCross:before,#gyroCross:after{content:"";position:absolute;background:#fff;}
+#gyroCross:before{width:20px;height:1px;top:9.5px;left:0}
+#gyroCross:after{height:20px;width:1px;left:9.5px;top:0}
+#gyroHud{position:absolute;z-index:26;left:calc(var(--safe-left) + 9px);right:calc(var(--safe-right) + 9px);bottom:calc(var(--safe-bottom) + 10px);pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:5px;}
+.gyro-pill{max-width:min(94vw,680px);padding:6px 10px;border-radius:10px;background:rgba(5,10,20,.7);border:1px solid rgba(255,255,255,.11);color:#dce5f3;font-size:11px;line-height:1.3;text-align:center;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+#gyroBtn{background:rgba(12,15,22,.78);border:1px solid rgba(255,255,255,.18);box-shadow:0 3px 16px rgba(0,0,0,.3);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}
+#gyroBtn.active{background:#1769e0;border-color:rgba(255,255,255,.32);}
+@media (max-width:430px){#toolbar{gap:4px}.ui-btn{padding:0 8px}.mode-label{display:none}}
+
 </style>
 </head>
 <body>
@@ -52,6 +66,7 @@ body{position:fixed;inset:0;overscroll-behavior:none;-webkit-user-select:none;us
     <button id="smartBtn" class="ui-btn" type="button">📱 スマホ</button>
     <button id="pcBtn" class="ui-btn" type="button">🖥 PC</button>
   </div>
+  <button id="gyroBtn" class="ui-btn" type="button" aria-pressed="false">🧭 <span class="mode-label">ジャイロ</span></button>
   <button id="locationBtn" class="ui-btn" type="button">📍 <span class="long-label">現在地</span></button>
 </div>
 
@@ -69,6 +84,15 @@ body{position:fixed;inset:0;overscroll-behavior:none;-webkit-user-select:none;us
   </div>
 </div>
 <div id="toast"></div>
+<div id="gyroView" hidden aria-label="ジャイロ星空表示">
+  <canvas id="gyroSky"></canvas>
+  <div id="gyroCross"></div>
+  <div id="gyroHud">
+    <div id="gyroInfo" class="gyro-pill">カメラ方向を取得中…</div>
+    <div id="gyroStatus" class="gyro-pill">ジャイロボタンを押すと方向センサーを開始します</div>
+  </div>
+</div>
+
 
 <!-- TurboWarp Scaffolding: Scratch互換ランタイム -->
 <script src="https://cdn.jsdelivr.net/npm/@turbowarp/scaffolding@0.4.0/dist/scaffolding-min.js"></script>
@@ -84,6 +108,8 @@ const VAR_IDS = Object.freeze({
   mode: 'WY$3i6^2jLCR|nbzMzOM'
 });
 const STORAGE_KEYS = Object.freeze({lat:'starrySky.latitude', lon:'starrySky.longitude', mode:'starrySky.mode'});
+let gyroMode = false;
+let preGyroMode = 1;
 let app = null;
 let toastTimer = 0;
 
@@ -137,6 +163,7 @@ function applyLocation(lat, lon, {save=true, message='観測地点を変更し�
   setVar(VAR_IDS.ok, 1);
   if (save) saveLocation(lat,lon);
   updateLocationInputs(lat,lon);
+  if (window.GyroSky) window.GyroSky.setLocation(lat,lon);
   const s = stage();
   if (s && s.runtime && s.runtime.requestRedraw) s.runtime.requestRedraw();
   if (message) toast(message);
@@ -168,6 +195,43 @@ function applyMode(mode, {save=true, announce=false}={}) {
   if (app && app.relayout) requestAnimationFrame(() => app.relayout());
   if (announce) toast(mode === 1 ? 'スマホモード' : 'パソコンモード');
 }
+async function setGyroMode(on) {
+  on = !!on;
+  const btn = document.getElementById('gyroBtn');
+  const view = document.getElementById('gyroView');
+  const project = document.getElementById('project');
+  if (on) {
+    if (gyroMode) return;
+    if (!window.GyroSky) { toast('ジャイロ表示を初期化できませんでした', 3200); return; }
+    preGyroMode = Number(getVar(VAR_IDS.mode)) === 0 ? 0 : 1;
+    const lat = Number(getVar(VAR_IDS.latitude)), lon = Number(getVar(VAR_IDS.longitude));
+    if (validLatLon(lat,lon)) window.GyroSky.setLocation(lat,lon);
+    // iOS requires requestPermission() to run directly from this button tap.
+    view.hidden = false;
+    project.style.visibility = 'hidden';
+    window.GyroSky.refresh();
+    const ok = await window.GyroSky.start();
+    if (!ok) {
+      view.hidden = true; project.style.visibility = '';
+      btn.classList.remove('active'); btn.setAttribute('aria-pressed','false');
+      toast('方向センサーを開始できませんでした。Safariのモーション許可を確認してください。', 4200);
+      return;
+    }
+    gyroMode = true;
+    btn.classList.add('active'); btn.setAttribute('aria-pressed','true');
+    document.getElementById('smartBtn').classList.remove('active');
+    document.getElementById('pcBtn').classList.remove('active');
+    toast('ジャイロモード：背面カメラが向く方向の星空を表示します', 3000);
+  } else {
+    if (window.GyroSky) window.GyroSky.stop();
+    gyroMode = false; view.hidden = true; project.style.visibility = '';
+    btn.classList.remove('active'); btn.setAttribute('aria-pressed','false');
+    applyMode(preGyroMode, {save:false, announce:false});
+    if (app && app.relayout) requestAnimationFrame(() => app.relayout());
+    toast('ジャイロモードを終了しました');
+  }
+}
+function toggleGyroMode() { return setGyroMode(!gyroMode); }
 function openLocationPanel() {
   const lat = Number(getVar(VAR_IDS.latitude)), lon = Number(getVar(VAR_IDS.longitude));
   if (validLatLon(lat,lon)) updateLocationInputs(lat,lon);
@@ -175,8 +239,9 @@ function openLocationPanel() {
 }
 function closeLocationPanel() { document.getElementById('locationPanel').hidden = true; }
 function wireUI() {
-  document.getElementById('smartBtn').addEventListener('click', () => applyMode(1, {announce:true}));
-  document.getElementById('pcBtn').addEventListener('click', () => applyMode(0, {announce:true}));
+  document.getElementById('smartBtn').addEventListener('click', async () => { if (gyroMode) await setGyroMode(false); applyMode(1, {announce:true}); });
+  document.getElementById('pcBtn').addEventListener('click', async () => { if (gyroMode) await setGyroMode(false); applyMode(0, {announce:true}); });
+  document.getElementById('gyroBtn').addEventListener('click', toggleGyroMode);
   document.getElementById('locationBtn').addEventListener('click', openLocationPanel);
   document.getElementById('closeLocation').addEventListener('click', closeLocationPanel);
   document.getElementById('applyLocation').addEventListener('click', () => {
@@ -226,6 +291,7 @@ async function boot() {
     await app.loadProject(base64ToBytes(PROJECT_BASE64));
     applyMode(detectedMode(), {save:false});
     await resolveStartupLocation(status);
+    if (window.GyroSky) window.GyroSky.setLocation(Number(getVar(VAR_IDS.latitude)), Number(getVar(VAR_IDS.longitude)));
     setVar(VAR_IDS.ok, 1);
     status.style.display = 'none';
     app.greenFlag();
@@ -242,7 +308,823 @@ async function boot() {
 }
 window.addEventListener('load', boot, {once:true});
 window.addEventListener('resize', () => { if (app && app.relayout) app.relayout(); });
-window.addEventListener('orientationchange', () => setTimeout(() => { if (app && app.relayout) app.relayout(); }, 100));
+window.addEventListener('orientationchange', () => setTimeout(() => { if (app && app.relayout) app.relayout(); if(window.GyroSky) window.GyroSky.refresh(); }, 100));
 </script>
+
+<script>
+/* Gyro sky catalog: extracted from the user's Scratch-based v15 renderer. */
+window.STARS=[{"id":1,"ra":101.25,"dec":-1642.0,"mag":-1.44,"ja":"おおいぬ座α星","en":"シリウス","color":"A"},{"id":2,"ra":95.75,"dec":-5201.0,"mag":-0.62,"ja":"りゅうこつ座α星","en":"カノープス","color":"F"},{"id":3,"ra":219.75,"dec":-6050.0,"mag":-0.27,"ja":"ケンタウルス座α星","en":"リギル・ケンタウルス","color":"G"},{"id":4,"ra":213.75,"dec":1910.0,"mag":-0.05,"ja":"うしかい座α星","en":"アークトゥルス","color":"K"},{"id":5,"ra":279.0,"dec":3847.0,"mag":0.03,"ja":"こと座α星","en":"ベガ","color":"A"},{"id":6,"ra":79.0,"dec":4559.0,"mag":0.08,"ja":"ぎょしゃ座α星","en":"カペラ","color":"G"},{"id":7,"ra":78.5,"dec":-812.0,"mag":0.18,"ja":"オリオン座β星","en":"リゲル","color":"B"},{"id":8,"ra":114.75,"dec":513.0,"mag":0.4,"ja":"こいぬ座α星","en":"プロキオン","color":"F"},{"id":9,"ra":24.25,"dec":-5714.0,"mag":0.45,"ja":"エリダヌス座α星","en":"アケルナル","color":"B"},{"id":10,"ra":88.75,"dec":724.0,"mag":0.45,"ja":"オリオン座α星","en":"ベテルギウス","color":"M"},{"id":11,"ra":210.75,"dec":-6022.0,"mag":0.61,"ja":"ケンタウルス座β星","en":"ハダル","color":"B"},{"id":12,"ra":297.5,"dec":852.0,"mag":0.76,"ja":"わし座α星","en":"アルタイル","color":"A"},{"id":13,"ra":186.5,"dec":-6305.0,"mag":0.77,"ja":"みなみじゅうじ座α星","en":"アクルックス","color":"B"},{"id":14,"ra":68.75,"dec":1630.0,"mag":0.87,"ja":"おうし座α星","en":"アルデバラン","color":"K"},{"id":15,"ra":201.25,"dec":-1109.0,"mag":0.98,"ja":"おとめ座α星","en":"スピカ","color":"B"},{"id":16,"ra":247.25,"dec":-2625.0,"mag":1.06,"ja":"さそり座α星","en":"アンタレス","color":"M"},{"id":17,"ra":116.25,"dec":2801.0,"mag":1.16,"ja":"ふたご座β星","en":"ポルックス","color":"K"},{"id":18,"ra":344.25,"dec":-2937.0,"mag":1.17,"ja":"みなみのうお座α星","en":"フォーマルハウト","color":"A"},{"id":19,"ra":191.75,"dec":-5941.0,"mag":1.25,"ja":"みなみじゅうじ座β星","en":"ミモザ","color":"B"},{"id":20,"ra":310.25,"dec":4516.0,"mag":1.25,"ja":"はくちょう座α星","en":"デネブ","color":"A"},{"id":21,"ra":152.0,"dec":1159.0,"mag":1.36,"ja":"しし座α星","en":"レグルス","color":"B"},{"id":22,"ra":104.5,"dec":-2858.0,"mag":1.5,"ja":"おおいぬ座ε星","en":"アダラ","color":"B"},{"id":23,"ra":113.5,"dec":3153.0,"mag":1.58,"ja":"ふたご座α星","en":"カストル","color":"A"},{"id":24,"ra":187.75,"dec":-5706.0,"mag":1.59,"ja":"みなみじゅうじ座γ星","en":"ガクルックス","color":"M"},{"id":25,"ra":263.25,"dec":-3706.0,"mag":1.62,"ja":"さそり座λ星","en":"シャウラ","color":"B"},{"id":26,"ra":81.25,"dec":620.0,"mag":1.64,"ja":"オリオン座γ星","en":"ベラトリックス","color":"B"},{"id":27,"ra":81.5,"dec":2836.0,"mag":1.65,"ja":"おうし座β星","en":"エルナト","color":"A"},{"id":28,"ra":138.25,"dec":-6943.0,"mag":1.67,"ja":"りゅうこつ座β星","en":"ミアプラキドゥス","color":"B"},{"id":29,"ra":84.0,"dec":-112.0,"mag":1.69,"ja":"オリオン座ε星","en":"アルニラム","color":"B"},{"id":30,"ra":332.0,"dec":-4657.0,"mag":1.73,"ja":"つる座α星","en":"アルナイル","color":"B"},{"id":31,"ra":85.0,"dec":-156.0,"mag":1.74,"ja":"オリオン座ζ星","en":"アルニタク","color":"O"},{"id":32,"ra":122.25,"dec":-4720.0,"mag":1.75,"ja":"ほ座γ2星","en":"スハイル","color":"O"},{"id":33,"ra":193.5,"dec":5557.0,"mag":1.76,"ja":"おおぐま座ε星","en":"アリオト","color":"B"},{"id":34,"ra":51.0,"dec":4951.0,"mag":1.79,"ja":"ペルセウス座α星","en":"ミルファク","color":"F"},{"id":35,"ra":276.0,"dec":-3423.0,"mag":1.79,"ja":"いて座ε星","en":"カウス・アウストラリス","color":"A"},{"id":36,"ra":165.75,"dec":6145.0,"mag":1.81,"ja":"おおぐま座α星","en":"ドゥベー","color":"G"},{"id":37,"ra":107.0,"dec":-2623.0,"mag":1.83,"ja":"おおいぬ座δ星","en":"ウェズン","color":"F"},{"id":38,"ra":206.75,"dec":4918.0,"mag":1.85,"ja":"おおぐま座η星","en":"アルカイド","color":"B"},{"id":39,"ra":125.5,"dec":-5930.0,"mag":1.86,"ja":"りゅうこつ座ε星","en":"アヴィオール","color":"K"},{"id":40,"ra":264.25,"dec":-4259.0,"mag":1.86,"ja":"さそり座θ星","en":"サルガス","color":"F"},{"id":41,"ra":89.75,"dec":4456.0,"mag":1.9,"ja":"ぎょしゃ座β星","en":"メンカリナン","color":"A"},{"id":42,"ra":252.0,"dec":-6901.0,"mag":1.91,"ja":"みなみのさんかく座α星","en":"アトリア","color":"K"},{"id":43,"ra":99.25,"dec":1623.0,"mag":1.93,"ja":"ふたご座γ星","en":"アルヘナ","color":"A"},{"id":44,"ra":131.0,"dec":-5442.0,"mag":1.93,"ja":"ほ座δ星","en":"Alsephina","color":"A"},{"id":45,"ra":306.25,"dec":-5644.0,"mag":1.94,"ja":"くじゃく座α星","en":"ピーコック","color":"B"},{"id":46,"ra":37.75,"dec":8915.0,"mag":1.97,"ja":"こぐま座α星","en":"ポラリス","color":"F"},{"id":47,"ra":95.5,"dec":-1757.0,"mag":1.98,"ja":"おおいぬ座β星","en":"ミルザム","color":"B"},{"id":48,"ra":141.75,"dec":-839.0,"mag":1.99,"ja":"うみへび座α星","en":"アルファルド","color":"K"},{"id":49,"ra":31.75,"dec":2327.0,"mag":2.01,"ja":"おひつじ座α星","en":"ハマル","color":"K"},{"id":50,"ra":154.75,"dec":1950.0,"mag":2.01,"ja":"しし座γ星","en":"アルジェバ","color":"K"},{"id":51,"ra":10.75,"dec":-1759.0,"mag":2.04,"ja":"くじら座β星","en":"ディフダ","color":"G"},{"id":52,"ra":283.75,"dec":-2617.0,"mag":2.05,"ja":"いて座σ星","en":"ヌンキ","color":"B"},{"id":53,"ra":211.5,"dec":-3622.0,"mag":2.06,"ja":"ケンタウルス座θ星","en":"メンケント","color":"K"},{"id":54,"ra":2.0,"dec":2905.0,"mag":2.07,"ja":"アンドロメダ座α星","en":"アルフェラッツ","color":"B"},{"id":55,"ra":17.25,"dec":3537.0,"mag":2.07,"ja":"アンドロメダ座β星","en":"ミラク","color":"M"},{"id":56,"ra":86.75,"dec":-940.0,"mag":2.07,"ja":"オリオン座κ星","en":"サイフ","color":"B"},{"id":57,"ra":222.5,"dec":7409.0,"mag":2.07,"ja":"こぐま座β星","en":"コカブ","color":"K"},{"id":58,"ra":340.5,"dec":-4653.0,"mag":2.07,"ja":"つる座β星","en":"Tiaki","color":"M"},{"id":59,"ra":263.5,"dec":1233.0,"mag":2.08,"ja":"へびつかい座α星","en":"ラサルハグェ","color":"A"},{"id":60,"ra":47.0,"dec":4057.0,"mag":2.09,"ja":"ペルセウス座β星","en":"アルゴル","color":"B"},{"id":61,"ra":30.749999999999996,"dec":4219.0,"mag":2.1,"ja":"アンドロメダ座γ星","en":"アルマク","color":"K"},{"id":62,"ra":177.25,"dec":1434.0,"mag":2.14,"ja":"しし座β星","en":"デネボラ","color":"A"},{"id":63,"ra":14.0,"dec":6043.0,"mag":2.15,"ja":"カシオペヤ座γ星","en":"Navi","color":"B"},{"id":64,"ra":190.25,"dec":-4857.0,"mag":2.2,"ja":"ケンタウルス座γ星","en":"ムリファイン","color":"A"},{"id":65,"ra":120.75000000000001,"dec":-4000.0,"mag":2.21,"ja":"とも座ζ星","en":"ナオス","color":"O"},{"id":66,"ra":139.25,"dec":-5916.0,"mag":2.21,"ja":"りゅうこつ座ι星","en":"アスピディスケ","color":"A"},{"id":67,"ra":233.5,"dec":2652.0,"mag":2.22,"ja":"かんむり座α星","en":"アルフェッカ","color":"A"},{"id":68,"ra":137.0,"dec":-4325.0,"mag":2.23,"ja":"ほ座λ星","en":"スハイル","color":"K"},{"id":69,"ra":200.75,"dec":5455.0,"mag":2.27,"ja":"おおぐま座ζ星","en":"ミザール","color":"A"},{"id":70,"ra":305.5,"dec":4015.0,"mag":2.23,"ja":"はくちょう座γ星","en":"サドル","color":"F"},{"id":71,"ra":10.0,"dec":5632.0,"mag":2.24,"ja":"カシオペヤ座α星","en":"シェダル","color":"K"},{"id":72,"ra":269.25,"dec":5129.0,"mag":2.24,"ja":"りゅう座γ星","en":"エルタニン","color":"K"},{"id":73,"ra":83.0,"dec":-17.0,"mag":2.25,"ja":"オリオン座δ星","en":"ミンタカ","color":"O"},{"id":74,"ra":2.25,"dec":5908.0,"mag":2.28,"ja":"カシオペヤ座β星","en":"カフ","color":"F"},{"id":75,"ra":204.75,"dec":-5327.0,"mag":2.29,"ja":"ケンタウルス座ε星","en":"","color":"B"},{"id":76,"ra":240.0,"dec":-2237.0,"mag":2.29,"ja":"さそり座δ星","en":"ジュバ","color":"B"},{"id":77,"ra":252.49999999999997,"dec":-3417.0,"mag":2.29,"ja":"さそり座ε星","en":"Larawag","color":"K"},{"id":78,"ra":220.25,"dec":-4723.0,"mag":2.3,"ja":"おおかみ座α星","en":"","color":"B"},{"id":79,"ra":218.75,"dec":-4209.0,"mag":2.33,"ja":"ケンタウルス座η星","en":"","color":"B"},{"id":80,"ra":165.25,"dec":5622.0,"mag":2.34,"ja":"おおぐま座β星","en":"メラク","color":"A"},{"id":81,"ra":221.0,"dec":2704.0,"mag":2.35,"ja":"うしかい座ε星","en":"イザル","color":"G"},{"id":82,"ra":326.0,"dec":952.0,"mag":2.38,"ja":"ペガスス座ε星","en":"エニフ","color":"K"},{"id":83,"ra":265.5,"dec":-3901.0,"mag":2.39,"ja":"さそり座κ星","en":"ギルタブ","color":"B"},{"id":84,"ra":6.5,"dec":-4218.0,"mag":2.4,"ja":"ほうおう座α星","en":"アンカア","color":"K"},{"id":85,"ra":178.25,"dec":5341.0,"mag":2.41,"ja":"おおぐま座γ星","en":"フェクダ","color":"A"},{"id":86,"ra":257.5,"dec":-1543.0,"mag":2.43,"ja":"へびつかい座η星","en":"サビク","color":"A"},{"id":87,"ra":345.75,"dec":2804.0,"mag":2.44,"ja":"ペガスス座β星","en":"シェアト","color":"M"},{"id":88,"ra":95.0,"dec":-3003.0,"mag":2.45,"ja":"おおいぬ座ζ星","en":"フルド","color":"B"},{"id":89,"ra":319.5,"dec":6235.0,"mag":2.45,"ja":"ケフェウス座α星","en":"アルデラミン","color":"A"},{"id":90,"ra":111.0,"dec":-2918.0,"mag":2.45,"ja":"おおいぬ座η星","en":"アルドラ","color":"B"},{"id":91,"ra":140.5,"dec":-5500.0,"mag":2.47,"ja":"ほ座κ星","en":"マルケブ","color":"B"},{"id":92,"ra":311.5,"dec":3358.0,"mag":2.48,"ja":"はくちょう座ε星","en":"Aljanah","color":"K"},{"id":93,"ra":346.0,"dec":1512.0,"mag":2.49,"ja":"ペガスス座α星","en":"マルカブ","color":"A"},{"id":94,"ra":45.5,"dec":405.0,"mag":2.54,"ja":"くじら座α星","en":"メンカル","color":"M"},{"id":95,"ra":249.25,"dec":-1034.0,"mag":2.54,"ja":"へびつかい座ζ星","en":"","color":"B"},{"id":96,"ra":208.75,"dec":-4717.0,"mag":2.55,"ja":"ケンタウルス座ζ星","en":"","color":"B"},{"id":97,"ra":168.5,"dec":2031.0,"mag":2.56,"ja":"しし座δ星","en":"ゾズマ","color":"A"},{"id":98,"ra":241.24999999999997,"dec":-1948.0,"mag":2.56,"ja":"さそり座β星","en":"アクラブ","color":"B"},{"id":99,"ra":83.0,"dec":-1749.0,"mag":2.58,"ja":"うさぎ座α星","en":"アルネブ","color":"A"},{"id":100,"ra":182.0,"dec":-5043.0,"mag":2.58,"ja":"ケンタウルス座δ星","en":"","color":"B"},{"id":101,"ra":183.75,"dec":-1732.0,"mag":2.58,"ja":"からす座γ星","en":"ギェナー","color":"B"},{"id":102,"ra":285.5,"dec":-2952.0,"mag":2.6,"ja":"いて座ζ星","en":"アスケラ","color":"A"},{"id":103,"ra":229.25,"dec":-952.0,"mag":2.61,"ja":"てんびん座β星","en":"ズベン・エス・カマリ","color":"B"},{"id":104,"ra":236.0,"dec":625.0,"mag":2.63,"ja":"へび座α星","en":"ウヌクアルハイ","color":"K"},{"id":105,"ra":28.5,"dec":2048.0,"mag":2.64,"ja":"おひつじ座β星","en":"シェラタン","color":"A"},{"id":106,"ra":84.75,"dec":-3404.0,"mag":2.65,"ja":"はと座α星","en":"ファクト","color":"B"},{"id":107,"ra":89.75,"dec":3712.0,"mag":2.65,"ja":"ぎょしゃ座θ星","en":"Mahasim","color":"B"},{"id":108,"ra":188.5,"dec":-2323.0,"mag":2.65,"ja":"からす座β星","en":"クラズ","color":"G"},{"id":109,"ra":21.25,"dec":6014.0,"mag":2.66,"ja":"カシオペヤ座δ星","en":"ルクバー","color":"A"},{"id":110,"ra":208.5,"dec":1823.0,"mag":2.68,"ja":"うしかい座η星","en":"ムフリッド","color":"G"},{"id":111,"ra":224.5,"dec":-4308.0,"mag":2.68,"ja":"おおかみ座β星","en":"","color":"B"},{"id":112,"ra":74.25,"dec":3309.0,"mag":2.69,"ja":"ぎょしゃ座ι星","en":"Hassaleh","color":"K"},{"id":113,"ra":161.5,"dec":-4925.0,"mag":2.69,"ja":"ほ座μ星","en":"","color":"G"},{"id":114,"ra":189.25,"dec":-6908.0,"mag":2.69,"ja":"はえ座α星","en":"","color":"B"},{"id":115,"ra":262.5,"dec":-3717.0,"mag":2.7,"ja":"さそり座υ星","en":"レサト","color":"B"},{"id":116,"ra":109.25,"dec":-3705.0,"mag":2.71,"ja":"とも座π星","en":"","color":"K"},{"id":117,"ra":275.25,"dec":-2949.0,"mag":2.72,"ja":"いて座δ星","en":"カウス・メディア","color":"K"},{"id":118,"ra":296.5,"dec":1037.0,"mag":2.72,"ja":"わし座γ星","en":"タラゼド","color":"K"},{"id":119,"ra":243.5,"dec":-341.0,"mag":2.73,"ja":"へびつかい座δ星","en":"イェド・プリオル","color":"M"},{"id":120,"ra":245.99999999999997,"dec":6131.0,"mag":2.73,"ja":"りゅう座η星","en":"Athebyne","color":"G"},{"id":121,"ra":160.75,"dec":-6423.0,"mag":2.74,"ja":"りゅうこつ座θ星","en":"","color":"B"},{"id":122,"ra":190.5,"dec":-127.0,"mag":2.74,"ja":"おとめ座γ星","en":"ポリマ","color":"F"},{"id":123,"ra":83.75,"dec":-555.0,"mag":2.75,"ja":"オリオン座ι星","en":"ハチサ","color":"B"},{"id":124,"ra":200.25,"dec":-3643.0,"mag":2.75,"ja":"ケンタウルス座ι星","en":"Alhakim","color":"A"},{"id":125,"ra":222.5,"dec":-1602.0,"mag":2.75,"ja":"てんびん座α2星","en":"ズベンエルゲヌビ","color":"K"},{"id":126,"ra":265.75,"dec":434.0,"mag":2.76,"ja":"へびつかい座β星","en":"ケバルライ","color":"K"},{"id":127,"ra":77.0,"dec":-505.0,"mag":2.78,"ja":"エリダヌス座β星","en":"クルサ","color":"A"},{"id":128,"ra":247.5,"dec":2129.0,"mag":2.78,"ja":"ヘルクレス座β星","en":"コルネフォロス","color":"G"},{"id":129,"ra":258.5,"dec":1423.0,"mag":2.78,"ja":"ヘルクレス座α星","en":"ラス・アルゲティ","color":"M"},{"id":130,"ra":183.75,"dec":-5845.0,"mag":2.79,"ja":"みなみじゅうじ座δ星","en":"","color":"B"},{"id":131,"ra":262.5,"dec":5218.0,"mag":2.79,"ja":"りゅう座β星","en":"ラスタバン","color":"G"},{"id":132,"ra":233.75,"dec":-4110.0,"mag":2.8,"ja":"おおかみ座γ星","en":"","color":"B"},{"id":133,"ra":82.0,"dec":-2046.0,"mag":2.81,"ja":"うさぎ座β星","en":"ニハル","color":"G"},{"id":134,"ra":250.25,"dec":3136.0,"mag":2.81,"ja":"ヘルクレス座ζ星","en":"","color":"G"},{"id":135,"ra":6.5,"dec":-7716.0,"mag":2.82,"ja":"みずへび座β星","en":"","color":"G"},{"id":136,"ra":249.00000000000003,"dec":-2813.0,"mag":2.82,"ja":"さそり座τ星","en":"Paikauhale","color":"B"},{"id":137,"ra":277.0,"dec":-2525.0,"mag":2.82,"ja":"いて座λ星","en":"カウス・ボレアリス","color":"K"},{"id":138,"ra":3.25,"dec":1511.0,"mag":2.83,"ja":"ペガスス座γ星","en":"アルゲニブ","color":"B"},{"id":139,"ra":122.0,"dec":-2418.0,"mag":2.83,"ja":"とも座ρ星","en":"トゥレイス","color":"F"},{"id":140,"ra":238.75,"dec":-6326.0,"mag":2.83,"ja":"みなみのさんかく座β星","en":"","color":"F"},{"id":141,"ra":58.5,"dec":3153.0,"mag":2.84,"ja":"ペルセウス座ζ星","en":"","color":"B"},{"id":142,"ra":261.25,"dec":-5532.0,"mag":2.84,"ja":"さいだん座β星","en":"","color":"K"},{"id":143,"ra":263.0,"dec":-4953.0,"mag":2.84,"ja":"さいだん座α星","en":"","color":"B"},{"id":144,"ra":56.75,"dec":2406.0,"mag":2.85,"ja":"おうし座η星","en":"アルキオネ","color":"B"},{"id":145,"ra":195.5,"dec":1058.0,"mag":2.85,"ja":"おとめ座ε星","en":"ヴィンデミアトリックス","color":"G"},{"id":146,"ra":326.75,"dec":-1608.0,"mag":2.85,"ja":"やぎ座δ星","en":"デネブ・アルゲディ","color":"A"},{"id":147,"ra":29.75,"dec":-6134.0,"mag":2.86,"ja":"みずへび座α星","en":"","color":"F"},{"id":148,"ra":296.25,"dec":4508.0,"mag":2.86,"ja":"はくちょう座δ星","en":"Fawaris","color":"A"},{"id":149,"ra":95.75,"dec":2231.0,"mag":2.87,"ja":"ふたご座μ星","en":"Tejat","color":"M"},{"id":150,"ra":34.25,"dec":3350.0,"mag":2.87,"ja":"さんかく座γ星","en":"","color":"A"},{"id":151,"ra":334.75,"dec":-6016.0,"mag":2.87,"ja":"きょしちょう座α星","en":"","color":"K"},{"id":152,"ra":44.5,"dec":-4018.0,"mag":2.88,"ja":"エリダヌス座θ星","en":"アカマル","color":"A"},{"id":153,"ra":287.25,"dec":-2101.0,"mag":2.88,"ja":"いて座π星","en":"アルバルダ","color":"F"},{"id":154,"ra":111.75,"dec":817.0,"mag":2.89,"ja":"こいぬ座β星","en":"ゴメイサ","color":"B"},{"id":155,"ra":194.0,"dec":3819.0,"mag":2.89,"ja":"りょうけん座α星","en":"コル・カロリ","color":"B"},{"id":156,"ra":239.75,"dec":-2607.0,"mag":2.89,"ja":"さそり座π星","en":"Fang","color":"B"},{"id":157,"ra":229.5,"dec":-6840.0,"mag":2.89,"ja":"みなみのさんかく座γ星","en":"","color":"A"},{"id":158,"ra":59.5,"dec":4001.0,"mag":2.9,"ja":"ペルセウス座ε星","en":"","color":"B"},{"id":159,"ra":245.25000000000003,"dec":-2535.0,"mag":2.9,"ja":"さそり座σ星","en":"アル・ニヤト","color":"B"},{"id":160,"ra":323.0,"dec":-534.0,"mag":2.9,"ja":"みずがめ座β星","en":"サダルスウド","color":"G"},{"id":161,"ra":46.25,"dec":5331.0,"mag":2.91,"ja":"ペルセウス座γ星","en":"","color":"G"},{"id":162,"ra":146.75,"dec":-6504.0,"mag":2.92,"ja":"りゅうこつ座υ星","en":"","color":"A"},{"id":163,"ra":340.75,"dec":3013.0,"mag":2.93,"ja":"ペガスス座η星","en":"マタル","color":"G"},{"id":164,"ra":102.5,"dec":-5037.0,"mag":2.94,"ja":"とも座τ星","en":"","color":"K"},{"id":165,"ra":187.5,"dec":-1631.0,"mag":2.94,"ja":"からす座δ星","en":"アルゴラブ","color":"A"},{"id":166,"ra":331.5,"dec":-19.0,"mag":2.95,"ja":"みずがめ座α星","en":"サダルメリク","color":"G"},{"id":167,"ra":59.5,"dec":-1331.0,"mag":2.97,"ja":"エリダヌス座γ星","en":"ザウラク","color":"M"},{"id":168,"ra":84.5,"dec":2108.0,"mag":2.97,"ja":"おうし座ζ星","en":"Tianguan","color":"B"},{"id":169,"ra":146.5,"dec":2346.0,"mag":2.97,"ja":"しし座ε星","en":"ラス・エラセド・アウストラリス","color":"G"},{"id":170,"ra":271.5,"dec":-3025.0,"mag":2.98,"ja":"いて座γ2星","en":"アルナスル","color":"K"},{"id":171,"ra":199.75,"dec":-2310.0,"mag":2.99,"ja":"うみへび座γ星","en":"","color":"G"},{"id":172,"ra":267.0,"dec":-4008.0,"mag":2.99,"ja":"さそり座ι1星","en":"","color":"F"},{"id":173,"ra":286.25,"dec":1352.0,"mag":2.99,"ja":"わし座ζ星","en":"Okab","color":"A"},{"id":174,"ra":32.5,"dec":3459.0,"mag":3.0,"ja":"さんかく座β星","en":"","color":"A"},{"id":175,"ra":167.5,"dec":4430.0,"mag":3.0,"ja":"おおぐま座ψ星","en":"","color":"K"},{"id":176,"ra":230.25,"dec":7150.0,"mag":3.0,"ja":"こぐま座γ星","en":"フェルカド","color":"A"},{"id":177,"ra":252.75000000000003,"dec":-3802.0,"mag":3.0,"ja":"さそり座μ1星","en":"Xamidimura","color":"B"},{"id":178,"ra":328.5,"dec":-3722.0,"mag":3.0,"ja":"つる座γ星","en":"アルダナブ","color":"B"},{"id":179,"ra":55.75,"dec":4747.0,"mag":3.01,"ja":"ペルセウス座δ星","en":"","color":"B"},{"id":180,"ra":95.0,"dec":-3004.0,"mag":3.02,"ja":"おおいぬ座ζ星","en":"フルド","color":"B"},{"id":181,"ra":105.75,"dec":-2350.0,"mag":3.02,"ja":"おおいぬ座ο2星","en":"","color":"B"},{"id":182,"ra":182.5,"dec":-2237.0,"mag":3.02,"ja":"からす座ε星","en":"","color":"K"},{"id":183,"ra":75.5,"dec":4349.0,"mag":3.03,"ja":"ぎょしゃ座ε星","en":"アル・マーズ","color":"F"},{"id":184,"ra":191.5,"dec":-6807.0,"mag":3.04,"ja":"はえ座β星","en":"","color":"B"},{"id":185,"ra":218.0,"dec":3819.0,"mag":3.04,"ja":"うしかい座γ星","en":"セギヌス","color":"A"},{"id":186,"ra":292.75,"dec":2758.0,"mag":3.04,"ja":"はくちょう座β1星","en":"アルビレオ","color":"K"},{"id":187,"ra":305.25,"dec":-1447.0,"mag":3.05,"ja":"やぎ座β星","en":"ダビー","color":"K"},{"id":188,"ra":101.0,"dec":2508.0,"mag":3.06,"ja":"ふたご座ε星","en":"メブスタ","color":"G"},{"id":189,"ra":155.5,"dec":4130.0,"mag":3.06,"ja":"おおぐま座μ星","en":"タニア・アウストラリス","color":"M"},{"id":190,"ra":288.25,"dec":6740.0,"mag":3.07,"ja":"りゅう座δ星","en":"アルタイス","color":"G"},{"id":191,"ra":274.5,"dec":-3646.0,"mag":3.1,"ja":"いて座η星","en":"","color":"M"},{"id":192,"ra":133.75,"dec":557.0,"mag":3.11,"ja":"うみへび座ζ星","en":"","color":"G"},{"id":193,"ra":162.5,"dec":-1611.0,"mag":3.11,"ja":"うみへび座ν星","en":"","color":"K"},{"id":194,"ra":174.0,"dec":-6301.0,"mag":3.11,"ja":"ケンタウルス座λ星","en":"","color":"A"},{"id":195,"ra":309.5,"dec":-4717.0,"mag":3.11,"ja":"インディアン座α星","en":"","color":"K"},{"id":196,"ra":87.75,"dec":-3546.0,"mag":3.12,"ja":"はと座β星","en":"ワズン","color":"K"},{"id":197,"ra":134.75,"dec":4802.0,"mag":3.12,"ja":"おおぐま座ι星","en":"タリタ","color":"A"},{"id":198,"ra":254.49999999999997,"dec":-5559.0,"mag":3.12,"ja":"さいだん座ζ星","en":"","color":"K"},{"id":199,"ra":258.75,"dec":2450.0,"mag":3.12,"ja":"ヘルクレス座δ星","en":"Sarin","color":"A"},{"id":200,"ra":224.75,"dec":-4206.0,"mag":3.13,"ja":"ケンタウルス座κ星","en":"","color":"B"},{"id":201,"ra":140.25,"dec":3423.0,"mag":3.14,"ja":"やまねこ座α星","en":"","color":"K"},{"id":202,"ra":142.75,"dec":-5702.0,"mag":3.16,"ja":"ほ座N星","en":"","color":"K"},{"id":203,"ra":258.75,"dec":3649.0,"mag":3.16,"ja":"ヘルクレス座π星","en":"","color":"K"},{"id":204,"ra":99.5,"dec":-4312.0,"mag":3.17,"ja":"とも座ν星","en":"","color":"B"},{"id":205,"ra":143.25,"dec":5141.0,"mag":3.17,"ja":"おおぐま座θ星","en":"","color":"F"},{"id":206,"ra":257.25,"dec":6543.0,"mag":3.17,"ja":"りゅう座ζ星","en":"Aldhibah","color":"B"},{"id":207,"ra":281.5,"dec":-2659.0,"mag":3.17,"ja":"いて座φ星","en":"","color":"B"},{"id":208,"ra":76.75,"dec":4114.0,"mag":3.18,"ja":"ぎょしゃ座η星","en":"ハエドゥス","color":"B"},{"id":209,"ra":220.75,"dec":-6458.0,"mag":3.18,"ja":"コンパス座α星","en":"","color":"A"},{"id":210,"ra":72.5,"dec":658.0,"mag":3.19,"ja":"オリオン座π3星","en":"タビト","color":"F"},{"id":211,"ra":76.5,"dec":-2222.0,"mag":3.19,"ja":"うさぎ座ε星","en":"","color":"K"},{"id":212,"ra":254.49999999999997,"dec":923.0,"mag":3.19,"ja":"へびつかい座κ星","en":"","color":"K"},{"id":213,"ra":267.5,"dec":-3702.0,"mag":3.19,"ja":"さそり座G星","en":"Fuyue","color":"K"},{"id":214,"ra":318.0,"dec":3013.0,"mag":3.21,"ja":"はくちょう座ζ星","en":"","color":"G"},{"id":215,"ra":354.75,"dec":7738.0,"mag":3.21,"ja":"ケフェウス座γ星","en":"エライ","color":"K"},{"id":216,"ra":230.25,"dec":-4039.0,"mag":3.22,"ja":"おおかみ座δ星","en":"","color":"B"},{"id":217,"ra":244.5,"dec":-441.0,"mag":3.23,"ja":"へびつかい座ε星","en":"イェド・ポステリオル","color":"G"},{"id":218,"ra":275.25,"dec":-254.0,"mag":3.23,"ja":"へび座η星","en":"","color":"K"},{"id":219,"ra":322.25,"dec":7034.0,"mag":3.23,"ja":"ケフェウス座β星","en":"アルフィルク","color":"B"},{"id":220,"ra":102.0,"dec":-6156.0,"mag":3.24,"ja":"がか座α星","en":"","color":"A"},{"id":221,"ra":302.75,"dec":-49.0,"mag":3.24,"ja":"わし座θ星","en":"","color":"B"},{"id":222,"ra":112.25,"dec":-4318.0,"mag":3.25,"ja":"とも座σ星","en":"","color":"K"},{"id":223,"ra":211.5,"dec":-2641.0,"mag":3.25,"ja":"うみへび座π星","en":"","color":"K"},{"id":224,"ra":226.0,"dec":-2517.0,"mag":3.25,"ja":"てんびん座σ星","en":"ブラキウム","color":"M"},{"id":225,"ra":284.75,"dec":3241.0,"mag":3.25,"ja":"こと座γ星","en":"スラファト","color":"B"},{"id":226,"ra":56.75,"dec":-7414.0,"mag":3.26,"ja":"みずへび座γ星","en":"","color":"M"},{"id":227,"ra":9.75,"dec":3052.0,"mag":3.27,"ja":"アンドロメダ座δ星","en":"","color":"K"},{"id":228,"ra":260.5,"dec":-2500.0,"mag":3.27,"ja":"へびつかい座θ星","en":"","color":"B"},{"id":229,"ra":343.75,"dec":-1549.0,"mag":3.27,"ja":"みずがめ座δ星","en":"スカト","color":"A"},{"id":230,"ra":78.25,"dec":-1613.0,"mag":3.29,"ja":"うさぎ座μ星","en":"","color":"B"},{"id":231,"ra":153.5,"dec":-7002.0,"mag":3.29,"ja":"りゅうこつ座ω星","en":"","color":"B"},{"id":232,"ra":231.25,"dec":5858.0,"mag":3.29,"ja":"りゅう座ι星","en":"エダシク","color":"K"},{"id":233,"ra":68.5,"dec":-5503.0,"mag":3.3,"ja":"かじき座α星","en":"","color":"B"},{"id":234,"ra":158.0,"dec":-6141.0,"mag":3.3,"ja":"りゅうこつ座p星","en":"","color":"B"},{"id":235,"ra":93.75,"dec":2231.0,"mag":3.31,"ja":"ふたご座η星","en":"プロプス","color":"M"},{"id":236,"ra":261.25,"dec":-5623.0,"mag":3.31,"ja":"さいだん座γ星","en":"","color":"B"},{"id":237,"ra":16.5,"dec":-4643.0,"mag":3.32,"ja":"ほうおう座β星","en":"","color":"G"},{"id":238,"ra":46.25,"dec":3850.0,"mag":3.32,"ja":"ペルセウス座ρ星","en":"","color":"M"},{"id":239,"ra":183.75,"dec":5702.0,"mag":3.32,"ja":"おおぐま座δ星","en":"メグレズ","color":"A"},{"id":240,"ra":258.0,"dec":-4314.0,"mag":3.32,"ja":"さそり座η星","en":"","color":"F"},{"id":241,"ra":269.75,"dec":-946.0,"mag":3.32,"ja":"へびつかい座ν星","en":"シンストラ","color":"K"},{"id":242,"ra":286.75,"dec":-2740.0,"mag":3.32,"ja":"いて座τ星","en":"","color":"K"},{"id":243,"ra":63.5,"dec":-6228.0,"mag":3.33,"ja":"レチクル座α星","en":"","color":"G"},{"id":244,"ra":168.5,"dec":1526.0,"mag":3.33,"ja":"しし座θ星","en":"シェルタン","color":"A"},{"id":245,"ra":117.25,"dec":-2452.0,"mag":3.34,"ja":"とも座ξ星","en":"Azmidi","color":"G"},{"id":246,"ra":28.5,"dec":6340.0,"mag":3.35,"ja":"カシオペヤ座ε星","en":"Segin","color":"B"},{"id":247,"ra":81.25,"dec":-224.0,"mag":3.35,"ja":"オリオン座η星","en":"","color":"B"},{"id":248,"ra":101.25,"dec":1254.0,"mag":3.35,"ja":"ふたご座ξ星","en":"Alzirr","color":"F"},{"id":249,"ra":127.5,"dec":6043.0,"mag":3.35,"ja":"おおぐま座ο星","en":"ムシダ","color":"G"},{"id":250,"ra":230.5,"dec":-4441.0,"mag":3.36,"ja":"おおかみ座ε星","en":"","color":"F"},{"id":251,"ra":131.75,"dec":625.0,"mag":3.38,"ja":"うみへび座ε星","en":"Ashlesha","color":"G"},{"id":252,"ra":203.75,"dec":-36.0,"mag":3.38,"ja":"おとめ座ζ星","en":"Heze","color":"A"},{"id":253,"ra":83.75,"dec":956.0,"mag":3.39,"ja":"オリオン座λ星","en":"メイサ","color":"B"},{"id":254,"ra":154.25,"dec":-6120.0,"mag":3.39,"ja":"りゅうこつ座q星","en":"","color":"K"},{"id":255,"ra":194.0,"dec":324.0,"mag":3.39,"ja":"おとめ座δ星","en":"ミネラウバ","color":"M"},{"id":256,"ra":332.5,"dec":5812.0,"mag":3.39,"ja":"ケフェウス座ζ星","en":"","color":"K"},{"id":257,"ra":67.25,"dec":1552.0,"mag":3.4,"ja":"おうし座θ2星","en":"Chamukuy","color":"A"},{"id":258,"ra":146.25,"dec":-6230.0,"mag":3.4,"ja":"りゅこつ座l星","en":"","color":"G"},{"id":259,"ra":22.0,"dec":-4319.0,"mag":3.41,"ja":"ほうおう座γ星","en":"","color":"M"},{"id":260,"ra":60.25,"dec":1229.0,"mag":3.41,"ja":"おうし座λ星","en":"","color":"B"},{"id":261,"ra":207.5,"dec":-4141.0,"mag":3.41,"ja":"ケンタウルス座ν星","en":"","color":"B"},{"id":262,"ra":228.0,"dec":-5206.0,"mag":3.41,"ja":"おおかみ座ζ星","en":"","color":"G"},{"id":263,"ra":311.25,"dec":6150.0,"mag":3.41,"ja":"ケフェウス座η星","en":"","color":"K"},{"id":264,"ra":340.5,"dec":1050.0,"mag":3.41,"ja":"ペガスス座ζ星","en":"ホマン","color":"B"},{"id":265,"ra":28.25,"dec":2935.0,"mag":3.42,"ja":"さんかく座α星","en":"モサラー","color":"A"},{"id":266,"ra":240.0,"dec":-3824.0,"mag":3.42,"ja":"おおかみ座η星","en":"","color":"B"},{"id":267,"ra":266.75,"dec":2743.0,"mag":3.42,"ja":"ヘルクレス座μ星","en":"","color":"G"},{"id":268,"ra":311.25,"dec":-6612.0,"mag":3.42,"ja":"くじゃく座β星","en":"","color":"A"},{"id":269,"ra":137.75,"dec":-5858.0,"mag":3.43,"ja":"りゅうこつ座a星","en":"","color":"B"},{"id":270,"ra":154.25,"dec":2325.0,"mag":3.43,"ja":"しし座ζ星","en":"アダフェラ","color":"A"},{"id":271,"ra":286.5,"dec":-453.0,"mag":3.43,"ja":"わし座λ星","en":"","color":"B"},{"id":272,"ra":154.25,"dec":4255.0,"mag":3.45,"ja":"おおぐま座λ星","en":"タニア・ボレアリス","color":"A"},{"id":273,"ra":12.25,"dec":5749.0,"mag":3.46,"ja":"カシオペヤ座η星","en":"Achird","color":"F"},{"id":274,"ra":17.25,"dec":-1011.0,"mag":3.46,"ja":"くじら座η星","en":"デネブ・アルゲヌビ","color":"K"},{"id":275,"ra":119.25,"dec":-5259.0,"mag":3.46,"ja":"りゅうこつ座χ星","en":"","color":"B"},{"id":276,"ra":229.0,"dec":3319.0,"mag":3.46,"ja":"うしかい座δ星","en":"","color":"G"},{"id":277,"ra":40.75,"dec":314.0,"mag":3.47,"ja":"くじら座γ星","en":"カファルジドマ","color":"A"},{"id":278,"ra":207.5,"dec":-4228.0,"mag":3.47,"ja":"ケンタウルス座μ星","en":"","color":"B"},{"id":279,"ra":151.75,"dec":1646.0,"mag":3.48,"ja":"しし座η星","en":"","color":"A"},{"id":280,"ra":250.74999999999997,"dec":3855.0,"mag":3.48,"ja":"ヘルクレス座η星","en":"","color":"G"},{"id":281,"ra":26.0,"dec":-1556.0,"mag":3.49,"ja":"くじら座τ星","en":"","color":"G"},{"id":282,"ra":105.5,"dec":-2756.0,"mag":3.49,"ja":"おおいぬ座σ星","en":"Unurgunite","color":"K"},{"id":283,"ra":169.75,"dec":3305.0,"mag":3.49,"ja":"おおぐま座ν星","en":"アルラ・ボレアリス","color":"K"},{"id":284,"ra":225.5,"dec":4023.0,"mag":3.49,"ja":"うしかい座β星","en":"ネカル","color":"G"},{"id":285,"ra":276.75,"dec":-4558.0,"mag":3.49,"ja":"ぼうえんきょう座α星","en":"","color":"B"},{"id":286,"ra":342.25,"dec":-5119.0,"mag":3.49,"ja":"つる座ε星","en":"","color":"A"},{"id":287,"ra":102.5,"dec":-3231.0,"mag":3.5,"ja":"おおいぬ座κ星","en":"","color":"B"},{"id":288,"ra":110.0,"dec":2159.0,"mag":3.5,"ja":"ふたご座δ星","en":"ワサト","color":"A"},{"id":289,"ra":342.5,"dec":6612.0,"mag":3.5,"ja":"ケフェウス座ι星","en":"","color":"K"},{"id":290,"ra":299.75,"dec":1929.0,"mag":3.51,"ja":"や座γ星","en":"","color":"M"},{"id":291,"ra":342.5,"dec":2436.0,"mag":3.51,"ja":"ペガスス座μ星","en":"サダルバリ","color":"K"},{"id":292,"ra":55.75,"dec":-946.0,"mag":3.52,"ja":"エリダヌス座δ星","en":"ラナ","color":"K"},{"id":293,"ra":145.25,"dec":953.0,"mag":3.52,"ja":"しし座ο星","en":"Subra","color":"F"},{"id":294,"ra":149.25,"dec":-5434.0,"mag":3.52,"ja":"ほ座φ星","en":"","color":"B"},{"id":295,"ra":282.5,"dec":3322.0,"mag":3.52,"ja":"こと座β星","en":"シェリアク","color":"B"},{"id":296,"ra":284.25,"dec":-2106.0,"mag":3.52,"ja":"いて座ξ2星","en":"","color":"G"},{"id":297,"ra":332.5,"dec":612.0,"mag":3.52,"ja":"ペガスス座θ星","en":"ビハム","color":"A"},{"id":298,"ra":67.25,"dec":1911.0,"mag":3.53,"ja":"おうし座ε星","en":"アイン","color":"K"},{"id":299,"ra":124.25,"dec":911.0,"mag":3.53,"ja":"かに座β星","en":"タルフ","color":"K"},{"id":300,"ra":173.25,"dec":-3152.0,"mag":3.54,"ja":"うみへび座ξ星","en":"","color":"G"},{"id":301,"ra":237.5,"dec":-326.0,"mag":3.54,"ja":"へび座μ星","en":"","color":"B"},{"id":302,"ra":264.5,"dec":-1524.0,"mag":3.54,"ja":"へび座ξ星","en":"","color":"A"},{"id":303,"ra":253.0,"dec":-3801.0,"mag":3.542,"ja":"さそり座μ2星","en":"Pipirima","color":"B"},{"id":304,"ra":4.75,"dec":-849.0,"mag":3.55,"ja":"くじら座ι星","en":"デネブ・アル・シャマリー","color":"K"},{"id":305,"ra":275.25,"dec":7243.0,"mag":3.55,"ja":"りゅう座χ星","en":"","color":"F"},{"id":306,"ra":64.25,"dec":-3347.0,"mag":3.55,"ja":"エリダヌス座υ4星","en":"","color":"B"},{"id":307,"ra":214.75,"dec":-4603.0,"mag":3.55,"ja":"おおかみ座ι星","en":"","color":"B"},{"id":308,"ra":135.75,"dec":4709.0,"mag":3.55,"ja":"おおぐま座κ星","en":"アルカプラ","color":"A"},{"id":309,"ra":169.75,"dec":-1446.0,"mag":3.56,"ja":"コップ座δ星","en":"","color":"K"},{"id":310,"ra":34.0,"dec":-5130.0,"mag":3.56,"ja":"エリダヌス座φ星","en":"","color":"B"},{"id":311,"ra":302.0,"dec":-6610.0,"mag":3.56,"ja":"くじゃく座δ星","en":"","color":"G"},{"id":312,"ra":24.25,"dec":4837.0,"mag":3.57,"ja":"アンドロメダ座51番星","en":"ネンブス","color":"K"},{"id":313,"ra":116.0,"dec":2423.0,"mag":3.57,"ja":"ふたご座κ星","en":"","color":"G"},{"id":314,"ra":230.25,"dec":-3615.0,"mag":3.57,"ja":"おおかみ座φ1星","en":"","color":"K"},{"id":315,"ra":304.5,"dec":-1232.0,"mag":3.58,"ja":"やぎ座α2星","en":"アルゲディ","color":"G"},{"id":316,"ra":109.5,"dec":1632.0,"mag":3.58,"ja":"ふたご座λ星","en":"","color":"A"},{"id":317,"ra":217.75,"dec":3022.0,"mag":3.59,"ja":"うしかい座ρ星","en":"","color":"K"},{"id":318,"ra":185.25,"dec":-6024.0,"mag":3.59,"ja":"みなみじゅうじ座ε星","en":"Ginan","color":"K"},{"id":319,"ra":79.25,"dec":-650.0,"mag":3.59,"ja":"オリオン座τ星","en":"","color":"B"},{"id":320,"ra":42.25,"dec":2715.0,"mag":3.594,"ja":"おひつじ座41番星","en":"バラニー","color":"B"},{"id":321,"ra":21.0,"dec":-810.0,"mag":3.6,"ja":"くじら座θ星","en":"","color":"K"},{"id":322,"ra":103.0,"dec":3357.0,"mag":3.6,"ja":"ふたご座θ星","en":"","color":"A"},{"id":323,"ra":51.0,"dec":901.0,"mag":3.6,"ja":"おうし座ο星","en":"","color":"G"},{"id":324,"ra":130.0,"dec":-5255.0,"mag":3.6,"ja":"ほ座ο星","en":"","color":"B"},{"id":325,"ra":142.5,"dec":-4028.0,"mag":3.6,"ja":"ほ座ψ星","en":"","color":"F"},{"id":326,"ra":177.5,"dec":145.0,"mag":3.6,"ja":"おとめ座β星","en":"ザヴィヤヴァ","color":"F"},{"id":327,"ra":152.5,"dec":-1221.0,"mag":3.61,"ja":"うみへび座λ星","en":"","color":"K"},{"id":328,"ra":195.5,"dec":-7132.0,"mag":3.61,"ja":"はえ座δ星","en":"","color":"K"},{"id":329,"ra":266.25,"dec":-6443.0,"mag":3.61,"ja":"くじゃく座η星","en":"","color":"K"},{"id":330,"ra":253.49999999999997,"dec":-4221.0,"mag":3.62,"ja":"さそり座ζ2星","en":"","color":"K"},{"id":331,"ra":345.25,"dec":4219.0,"mag":3.62,"ja":"アンドロメダ座ο星","en":"","color":"B"},{"id":332,"ra":262.75,"dec":-6041.0,"mag":3.62,"ja":"さいだん座δ星","en":"","color":"B"},{"id":333,"ra":22.75,"dec":1520.0,"mag":3.62,"ja":"うお座η星","en":"アルフェルグ","color":"G"},{"id":334,"ra":116.25,"dec":-3758.0,"mag":3.62,"ja":"とも座c星","en":"","color":"K"},{"id":335,"ra":309.25,"dec":1435.0,"mag":3.63,"ja":"いるか座β星","en":"ロタネヴ","color":"F"},{"id":336,"ra":57.25,"dec":2403.0,"mag":3.63,"ja":"おうし座27番星","en":"アトラス","color":"B"},{"id":337,"ra":337.0,"dec":-1.0,"mag":3.65,"ja":"みずがめ座ζ星","en":"","color":"F"},{"id":338,"ra":64.75,"dec":1537.0,"mag":3.65,"ja":"おうし座γ星","en":"プリマヒヤドゥム","color":"G"},{"id":339,"ra":142.75,"dec":6303.0,"mag":3.65,"ja":"おおぐま座h星","en":"","color":"F"},{"id":340,"ra":347.25,"dec":-2110.0,"mag":3.66,"ja":"みずがめ座88番星","en":"","color":"K"},{"id":341,"ra":271.5,"dec":-5005.0,"mag":3.66,"ja":"さいだん座θ星","en":"","color":"B"},{"id":342,"ra":9.0,"dec":5353.0,"mag":3.66,"ja":"カシオペヤ座ζ星","en":"附路","color":"B"},{"id":343,"ra":325.0,"dec":-1639.0,"mag":3.67,"ja":"やぎ座γ星","en":"ナシラ","color":"K"},{"id":344,"ra":313.5,"dec":-5827.0,"mag":3.67,"ja":"インディアン座β星","en":"","color":"K"},{"id":345,"ra":236.5,"dec":1525.0,"mag":3.67,"ja":"へび座β星","en":"シュウ","color":"A"},{"id":346,"ra":231.75,"dec":2906.0,"mag":3.68,"ja":"かんむり座β星","en":"ヌサカン","color":"F"},{"id":347,"ra":211.0,"dec":6422.0,"mag":3.68,"ja":"りゅう座α星","en":"トゥバン","color":"A"},{"id":348,"ra":176.25,"dec":-6643.0,"mag":3.68,"ja":"はえ座λ星","en":"","color":"A"},{"id":349,"ra":72.75,"dec":536.0,"mag":3.68,"ja":"オリオン座π4星","en":"","color":"B"},{"id":350,"ra":130.75,"dec":-3311.0,"mag":3.68,"ja":"らしんばん座α星","en":"","color":"B"},{"id":351,"ra":28.749999999999996,"dec":-5136.0,"mag":3.69,"ja":"エリダヌス座χ星","en":"","color":"G"},{"id":352,"ra":49.75,"dec":-2145.0,"mag":3.7,"ja":"エリダヌス座τ4星","en":"","color":"M"},{"id":353,"ra":269.25,"dec":2914.0,"mag":3.7,"ja":"ヘルクレス座ξ星","en":"","color":"K"},{"id":354,"ra":349.25,"dec":316.0,"mag":3.7,"ja":"うお座γ星","en":"","color":"G"},{"id":355,"ra":56.0,"dec":2406.0,"mag":3.7,"ja":"おうし座17番星","en":"エレクトラ","color":"B"},{"id":356,"ra":298.75,"dec":624.0,"mag":3.71,"ja":"わし座β星","en":"アルシャイン","color":"G"},{"id":357,"ra":271.75,"dec":933.0,"mag":3.71,"ja":"へびつかい座72番星","en":"","color":"A"},{"id":358,"ra":237.5,"dec":428.0,"mag":3.71,"ja":"へび座ε星","en":"","color":"K"},{"id":359,"ra":118.0,"dec":-4034.0,"mag":3.71,"ja":"とも座a星","en":"","color":"G"},{"id":360,"ra":73.5,"dec":226.0,"mag":3.713,"ja":"オリオン座π5星","en":"","color":"B"},{"id":361,"ra":89.75,"dec":5417.0,"mag":3.72,"ja":"ぎょしゃ座δ星","en":"プリジパティ","color":"K"},{"id":362,"ra":27.75,"dec":-1020.0,"mag":3.72,"ja":"くじら座ζ星","en":"バテン・カイトス","color":"K"},{"id":363,"ra":316.0,"dec":4355.0,"mag":3.72,"ja":"はくちょう座ξ星","en":"","color":"K"},{"id":364,"ra":176.5,"dec":4746.0,"mag":3.72,"ja":"おおぐま座χ星","en":"太陽守","color":"K"},{"id":365,"ra":53.0,"dec":-927.0,"mag":3.73,"ja":"エリダヌス座ε星","en":"Ran","color":"K"},{"id":366,"ra":51.75,"dec":943.0,"mag":3.73,"ja":"おうし座ξ星","en":"","color":"B"},{"id":367,"ra":221.5,"dec":153.0,"mag":3.73,"ja":"おとめ座109番星","en":"","color":"A"},{"id":368,"ra":321.5,"dec":-2224.0,"mag":3.74,"ja":"やぎ座ζ星","en":"","color":"G"},{"id":369,"ra":318.5,"dec":3802.0,"mag":3.74,"ja":"はくちょう座τ星","en":"","color":"F"},{"id":370,"ra":245.25000000000003,"dec":1909.0,"mag":3.74,"ja":"ヘルクレス座γ星","en":"","color":"A"},{"id":371,"ra":343.0,"dec":-734.0,"mag":3.75,"ja":"みずがめ座λ星","en":"ヒュドル","color":"M"},{"id":372,"ra":75.5,"dec":4104.0,"mag":3.75,"ja":"ぎょしゃ座ζ星","en":"Saclateni","color":"K"},{"id":373,"ra":268.25,"dec":5652.0,"mag":3.75,"ja":"りゅう座ξ星","en":"グルミウム","color":"K"},{"id":374,"ra":266.75,"dec":242.0,"mag":3.75,"ja":"へびつかい座γ星","en":"","color":"A"},{"id":375,"ra":136.0,"dec":-4705.0,"mag":3.75,"ja":"ほ座c星","en":"","color":"K"},{"id":376,"ra":292.25,"dec":5143.0,"mag":3.76,"ja":"はくちょう座ι2星","en":"","color":"A"},{"id":377,"ra":83.25,"dec":-6229.0,"mag":3.76,"ja":"かじき座β星","en":"","color":"F"},{"id":378,"ra":87.75,"dec":-2052.0,"mag":3.76,"ja":"うさぎ座δ星","en":"","color":"G"},{"id":379,"ra":325.25,"dec":-7723.0,"mag":3.76,"ja":"はちぶんぎ座ν星","en":"","color":"K"},{"id":380,"ra":286.0,"dec":-2144.0,"mag":3.76,"ja":"いて座ο星","en":"","color":"K"},{"id":381,"ra":65.5,"dec":1732.0,"mag":3.76,"ja":"おうし座δ1星","en":"Secunda Hyadum","color":"G"},{"id":382,"ra":107.0,"dec":-7029.0,"mag":3.768,"ja":"とびうお座γ星","en":"","color":"G"},{"id":383,"ra":311.75,"dec":-929.0,"mag":3.77,"ja":"みずがめ座ε星","en":"アルバリ","color":"B"},{"id":384,"ra":252.25,"dec":-5902.0,"mag":3.77,"ja":"さいだん座η星","en":"","color":"K"},{"id":385,"ra":309.75,"dec":1554.0,"mag":3.77,"ja":"いるか座α星","en":"スアロキン","color":"B"},{"id":386,"ra":337.75,"dec":5016.0,"mag":3.77,"ja":"とかげ座α星","en":"","color":"A"},{"id":387,"ra":331.75,"dec":2520.0,"mag":3.77,"ja":"ペガスス座ι星","en":"","color":"F"},{"id":388,"ra":130.0,"dec":-4638.0,"mag":3.77,"ja":"ほ座b星","en":"","color":"F"},{"id":389,"ra":126.24999999999999,"dec":-6608.0,"mag":3.775,"ja":"とびうお座β星","en":"","color":"K"},{"id":390,"ra":220.25,"dec":1343.0,"mag":3.78,"ja":"うしかい座ζ星","en":"","color":"A"},{"id":391,"ra":111.25,"dec":2747.0,"mag":3.78,"ja":"ふたご座ι星","en":"","color":"G"},{"id":392,"ra":147.5,"dec":5902.0,"mag":3.78,"ja":"おおぐま座υ星","en":"","color":"F"},{"id":393,"ra":163.25,"dec":-5851.0,"mag":3.78,"ja":"エリダヌス座u星","en":"","color":"K"},{"id":394,"ra":106.0,"dec":2034.0,"mag":3.79,"ja":"ふたご座ζ星","en":"メクブダ","color":"G"},{"id":395,"ra":42.5,"dec":5553.0,"mag":3.79,"ja":"ペルセウス座η星","en":"ミラム","color":"K"},{"id":396,"ra":169.5,"dec":3131.0,"mag":3.79,"ja":"おおぐま座ξ星","en":"アルラ・アウストラリス","color":"G"},{"id":397,"ra":221.75,"dec":-7902.0,"mag":3.798,"ja":"ふうちょう座α星","en":"","color":"K"},{"id":398,"ra":298.0,"dec":100.0,"mag":3.8,"ja":"わし座η星","en":"","color":"F"},{"id":399,"ra":289.25,"dec":5322.0,"mag":3.8,"ja":"はくちょう座κ星","en":"","color":"K"},{"id":400,"ra":303.25,"dec":4644.0,"mag":3.8,"ja":"はくちょう座ο1星","en":"","color":"K"},{"id":401,"ra":264.75,"dec":4600.0,"mag":3.8,"ja":"ヘルクレス座ι星","en":"","color":"B"},{"id":402,"ra":84.5,"dec":-236.0,"mag":3.8,"ja":"オリオン座σ星","en":"","color":"O"},{"id":403,"ra":56.25,"dec":4234.0,"mag":3.8,"ja":"ペルセウス座ν星","en":"","color":"F"},{"id":404,"ra":233.5,"dec":1032.0,"mag":3.8,"ja":"へび座δ星","en":"","color":"F"},{"id":405,"ra":47.25,"dec":4451.0,"mag":3.81,"ja":"ペルセウス座κ星","en":"Misam","color":"G"},{"id":406,"ra":235.5,"dec":2617.0,"mag":3.81,"ja":"かんむり座γ星","en":"","color":"A"},{"id":407,"ra":156.75,"dec":-5844.0,"mag":3.81,"ja":"エリダヌス座s星","en":"","color":"F"},{"id":408,"ra":354.25,"dec":4627.0,"mag":3.82,"ja":"アンドロメダ座λ星","en":"","color":"G"},{"id":409,"ra":68.75,"dec":-3033.0,"mag":3.82,"ja":"エリダヌス座υ2星","en":"テーミン","color":"G"},{"id":410,"ra":139.5,"dec":3648.0,"mag":3.82,"ja":"やまねこ座38番星","en":"","color":"A"},{"id":411,"ra":30.5,"dec":245.0,"mag":3.82,"ja":"うお座α星","en":"アルレシャ","color":"K"},{"id":412,"ra":296.75,"dec":1832.0,"mag":3.82,"ja":"や座δ星","en":"","color":"M"},{"id":413,"ra":209.5,"dec":-4206.0,"mag":3.83,"ja":"ケンタウルス座φ星","en":"","color":"B"},{"id":414,"ra":156.5,"dec":-1650.0,"mag":3.83,"ja":"うみへび座μ星","en":"","color":"K"},{"id":415,"ra":163.25,"dec":3412.0,"mag":3.83,"ja":"こじし座46番星","en":"プラエキプア","color":"K"},{"id":416,"ra":56.0,"dec":3217.0,"mag":3.83,"ja":"ペルセウス座ο星","en":"アティク","color":"B"},{"id":417,"ra":278.75,"dec":-814.0,"mag":3.83,"ja":"たて座α星","en":"","color":"K"},{"id":418,"ra":167.0,"dec":-5858.0,"mag":3.83,"ja":"りゅうこつ座V382星","en":"","color":"G"},{"id":419,"ra":243.75,"dec":-6341.0,"mag":3.839,"ja":"みなみのさんかく座δ星","en":"","color":"G"},{"id":420,"ra":271.75,"dec":2845.0,"mag":3.84,"ja":"ヘルクレス座ο星","en":"","color":"B"},{"id":421,"ra":158.0,"dec":918.0,"mag":3.84,"ja":"しし座ρ星","en":"","color":"B"},{"id":422,"ra":188.0,"dec":-7207.0,"mag":3.84,"ja":"はえ座γ星","en":"","color":"B"},{"id":423,"ra":56.0,"dec":-6448.0,"mag":3.84,"ja":"レチクル座β星","en":"","color":"K"},{"id":424,"ra":239.0,"dec":1539.0,"mag":3.84,"ja":"へび座γ星","en":"アインアルハイ","color":"F"},{"id":425,"ra":67.0,"dec":1557.0,"mag":3.84,"ja":"おうし座θ1星","en":"Chamukuy","color":"G"},{"id":426,"ra":159.25,"dec":-4813.0,"mag":3.84,"ja":"ほ座p星","en":"","color":"A"},{"id":427,"ra":133.75,"dec":-6038.0,"mag":3.84,"ja":"エリダヌス座c星","en":"","color":"B"},{"id":428,"ra":335.25,"dec":-123.0,"mag":3.847,"ja":"みずがめ座γ星","en":"サダクビア","color":"A"},{"id":429,"ra":189.25,"dec":-4832.0,"mag":3.85,"ja":"ケンタウルス座τ星","en":"","color":"A"},{"id":430,"ra":95.5,"dec":-3326.0,"mag":3.85,"ja":"はと座δ星","en":"","color":"G"},{"id":431,"ra":172.75,"dec":6919.0,"mag":3.85,"ja":"りゅう座λ星","en":"ギャウサル","color":"M"},{"id":432,"ra":188.25,"dec":6947.0,"mag":3.85,"ja":"りゅう座κ星","en":"","color":"B"},{"id":433,"ra":48.0,"dec":-2859.0,"mag":3.85,"ja":"ろ座α星","en":"Dalim","color":"F"},{"id":434,"ra":275.75,"dec":2146.0,"mag":3.85,"ja":"ヘルクレス座109番星","en":"","color":"K"},{"id":435,"ra":273.25,"dec":-2103.0,"mag":3.85,"ja":"いて座μ星","en":"Polis","color":"B"},{"id":436,"ra":153.5,"dec":-4207.0,"mag":3.85,"ja":"ほ座q星","en":"","color":"A"},{"id":437,"ra":248.25,"dec":-7853.0,"mag":3.854,"ja":"ふうちょう座γ星","en":"","color":"G"},{"id":438,"ra":82.75,"dec":-3528.0,"mag":3.86,"ja":"はと座ε星","en":"","color":"K"},{"id":439,"ra":269.0,"dec":3715.0,"mag":3.86,"ja":"ヘルクレス座θ星","en":"","color":"K"},{"id":440,"ra":63.5,"dec":-4217.0,"mag":3.86,"ja":"とけい座α星","en":"","color":"K"},{"id":441,"ra":86.75,"dec":-5103.0,"mag":3.86,"ja":"がか座β星","en":"","color":"A"},{"id":442,"ra":239.0,"dec":-2912.0,"mag":3.86,"ja":"さそり座ρ星","en":"イクリール","color":"B"},{"id":443,"ra":14.0,"dec":3829.0,"mag":3.87,"ja":"アンドロメダ座μ星","en":"","color":"A"},{"id":444,"ra":209.5,"dec":-4448.0,"mag":3.87,"ja":"ケンタウルス座υ1星","en":"","color":"B"},{"id":445,"ra":69.5,"dec":-1418.0,"mag":3.87,"ja":"エリダヌス座53番星","en":"Sceptrum","color":"K"},{"id":446,"ra":44.0,"dec":-853.0,"mag":3.87,"ja":"エリダヌス座η星","en":"アザー","color":"K"},{"id":447,"ra":151.75,"dec":959.0,"mag":4.39,"ja":"しし座31番星","en":"","color":"K"},{"id":448,"ra":56.25,"dec":2422.0,"mag":3.87,"ja":"おうし座20番星","en":"マイア","color":"B"},{"id":449,"ra":220.75,"dec":-539.0,"mag":3.87,"ja":"おとめ座μ星","en":"","color":"F"},{"id":450,"ra":131.5,"dec":-4602.0,"mag":3.87,"ja":"ほ座a星","en":"","color":"A"},{"id":451,"ra":347.5,"dec":-4514.0,"mag":3.88,"ja":"つる座ι星","en":"","color":"K"},{"id":452,"ra":148.0,"dec":2600.0,"mag":3.88,"ja":"しし座μ星","en":"ラサラス","color":"K"},{"id":453,"ra":227.75,"dec":-4844.0,"mag":3.88,"ja":"おおかみ座κ星","en":"","color":"B"},{"id":454,"ra":2.25,"dec":-4544.0,"mag":3.88,"ja":"ほうおう座ε星","en":"","color":"K"},{"id":455,"ra":337.25,"dec":5824.0,"mag":3.89,"ja":"ケフェウス座δ星","en":"","color":"F"},{"id":456,"ra":299.0,"dec":3505.0,"mag":3.89,"ja":"はくちょう座η星","en":"","color":"K"},{"id":457,"ra":138.5,"dec":218.0,"mag":3.89,"ja":"うみへび座θ星","en":"","color":"B"},{"id":458,"ra":103.5,"dec":-2211.0,"mag":3.89,"ja":"おおいぬ座ο1星","en":"","color":"K"},{"id":459,"ra":170.25,"dec":-5429.0,"mag":3.9,"ja":"ケンタウルス座π星","en":"","color":"B"},{"id":460,"ra":247.5,"dec":159.0,"mag":3.9,"ja":"へびつかい座λ星","en":"マルフィク","color":"A"},{"id":461,"ra":184.75,"dec":-40.0,"mag":3.9,"ja":"おとめ座η星","en":"ザニア","color":"A"},{"id":462,"ra":202.75,"dec":-3924.0,"mag":3.9,"ja":"ケンタウルス座d星","en":"","color":"G"},{"id":463,"ra":187.0,"dec":-5013.0,"mag":3.91,"ja":"ケンタウルス座σ星","en":"","color":"B"},{"id":464,"ra":297.0,"dec":7016.0,"mag":3.91,"ja":"りゅう座ε星","en":"","color":"G"},{"id":465,"ra":244.75,"dec":4618.0,"mag":3.91,"ja":"ヘルクレス座τ星","en":"","color":"B"},{"id":466,"ra":144.75,"dec":-108.0,"mag":3.91,"ja":"うみへび座ι星","en":"ウクダー","color":"K"},{"id":467,"ra":226.25,"dec":-4703.0,"mag":3.91,"ja":"おおかみ座π星","en":"","color":"B"},{"id":468,"ra":290.5,"dec":-4427.0,"mag":3.91,"ja":"いて座β1星","en":"アルカブ・プリオル","color":"B"},{"id":469,"ra":60.75,"dec":559.0,"mag":3.91,"ja":"おうし座ν星","en":"","color":"A"},{"id":470,"ra":233.75,"dec":-1447.0,"mag":3.91,"ja":"てんびん座γ星","en":"ズベン・エル・ハクラビ","color":"G"},{"id":471,"ra":126.24999999999999,"dec":-354.0,"mag":3.91,"ja":"うみへび座C星","en":"","color":"A"},{"id":472,"ra":255.0,"dec":3055.0,"mag":3.92,"ja":"ヘルクレス座ε星","en":"","color":"A"},{"id":473,"ra":290.25,"dec":-1750.0,"mag":3.92,"ja":"いて座ρ1星","en":"","color":"F"},{"id":474,"ra":69.0,"dec":-321.0,"mag":3.93,"ja":"エリダヌス座ν星","en":"","color":"B"},{"id":475,"ra":270.0,"dec":255.0,"mag":3.93,"ja":"へびつかい座67番星","en":"","color":"B"},{"id":476,"ra":6.5,"dec":-4340.0,"mag":3.93,"ja":"ほうおう座κ星","en":"","color":"A"},{"id":477,"ra":22.75,"dec":-4904.0,"mag":3.93,"ja":"ほうおう座δ星","en":"","color":"K"},{"id":478,"ra":241.50000000000003,"dec":-2040.0,"mag":3.93,"ja":"さそり座ω1星","en":"","color":"B"},{"id":479,"ra":115.25,"dec":-7236.0,"mag":3.93,"ja":"とびうお座ζ星","en":"","color":"K"},{"id":480,"ra":131.0,"dec":1809.0,"mag":3.94,"ja":"かに座δ星","en":"アセルス・アウストラリス","color":"K"},{"id":481,"ra":314.25,"dec":4110.0,"mag":3.94,"ja":"はくちょう座ν星","en":"","color":"A"},{"id":482,"ra":115.25,"dec":-933.0,"mag":3.94,"ja":"いっかくじゅう座α星","en":"","color":"K"},{"id":483,"ra":115.75,"dec":-2857.0,"mag":3.94,"ja":"とも座3番星","en":"","color":"A"},{"id":484,"ra":318.75,"dec":514.0,"mag":3.949,"ja":"こうま座α星","en":"キタルファ","color":"G"},{"id":485,"ra":30.749999999999996,"dec":7225.0,"mag":3.95,"ja":"カシオペヤ座50番星","en":"","color":"A"},{"id":486,"ra":341.5,"dec":2333.0,"mag":3.95,"ja":"ペガスス座λ星","en":"","color":"G"},{"id":487,"ra":290.75,"dec":-4036.0,"mag":3.95,"ja":"いて座α星","en":"ルクバト","color":"B"},{"id":488,"ra":99.0,"dec":-1915.0,"mag":3.95,"ja":"おおいぬ座ν2星","en":"","color":"K"},{"id":489,"ra":89.75,"dec":-4248.0,"mag":3.96,"ja":"はと座η星","en":"","color":"K"},{"id":490,"ra":303.75,"dec":4742.0,"mag":3.96,"ja":"はくちょう座ο2星","en":"","color":"K"},{"id":491,"ra":66.0,"dec":-3401.0,"mag":3.96,"ja":"エリダヌス座υ3星","en":"ベーミン","color":"K"},{"id":492,"ra":135.0,"dec":4147.0,"mag":3.96,"ja":"おおぐま座10番星","en":"","color":"F"},{"id":493,"ra":43.5,"dec":5245.0,"mag":3.96,"ja":"ペルセウス座τ星","en":"","color":"G"},{"id":494,"ra":62.00000000000001,"dec":4742.0,"mag":3.96,"ja":"ペルセウス座48番星","en":"","color":"B"},{"id":495,"ra":137.75,"dec":-6219.0,"mag":3.96,"ja":"エリダヌス座i星","en":"","color":"B"},{"id":496,"ra":350.5,"dec":-2006.0,"mag":3.97,"ja":"みずがめ座98番星","en":"","color":"K"},{"id":497,"ra":87.75,"dec":3908.0,"mag":3.97,"ja":"ぎょしゃ座ν星","en":"","color":"K"},{"id":498,"ra":182.75,"dec":-5222.0,"mag":3.97,"ja":"ケンタウルス座ρ星","en":"","color":"B"},{"id":499,"ra":337.25,"dec":-4329.0,"mag":3.97,"ja":"つる座δ1星","en":"","color":"G"},{"id":500,"ra":237.5,"dec":-3337.0,"mag":3.97,"ja":"おおかみ座χ星","en":"","color":"B"},{"id":501,"ra":300.0,"dec":-7254.0,"mag":3.97,"ja":"くじゃく座ε星","en":"","color":"A"},{"id":502,"ra":130.0,"dec":-3518.0,"mag":3.97,"ja":"らしんばん座β星","en":"","color":"G"},{"id":503,"ra":109.0,"dec":-6757.0,"mag":3.97,"ja":"とびうお座δ星","en":"","color":"F"},{"id":504,"ra":323.25,"dec":4535.0,"mag":3.98,"ja":"はくちょう座ρ星","en":"","color":"G"},{"id":505,"ra":349.25,"dec":-5814.0,"mag":3.98,"ja":"きょしちょう座γ星","en":"","color":"F"},{"id":506,"ra":30.0,"dec":-2104.0,"mag":3.99,"ja":"くじら座υ星","en":"","color":"K"},{"id":507,"ra":93.5,"dec":-616.0,"mag":3.99,"ja":"いっかくじゅう座γ星","en":"","color":"K"},{"id":508,"ra":156.0,"dec":-7401.0,"mag":3.99,"ja":"りゅうこつ座I星","en":"","color":"F"},{"id":509,"ra":170.75,"dec":1031.0,"mag":4.0,"ja":"しし座ι星","en":"","color":"F"},{"id":510,"ra":242.75,"dec":-1927.0,"mag":4.0,"ja":"さそり座ν星","en":"ジャバハー","color":"B"},{"id":511,"ra":135.5,"dec":-6623.0,"mag":4.0,"ja":"とびうお座α星","en":"","color":"K"},{"id":512,"ra":182.0,"dec":-2443.0,"mag":4.0,"ja":"からす座α星","en":"アルキバ","color":"F"},{"id":513,"ra":43.25,"dec":-4953.0,"mag":4.0,"ja":"とけい座R星","en":"","color":"M"},{"id":514,"ra":108.5,"dec":-2646.0,"mag":4.01,"ja":"おおいぬ座ω星","en":"","color":"B"},{"id":515,"ra":307.25,"dec":3022.0,"mag":4.01,"ja":"はくちょう座41番星","en":"","color":"F"},{"id":516,"ra":240.25,"dec":5833.0,"mag":4.01,"ja":"りゅう座θ星","en":"","color":"F"},{"id":517,"ra":71.25,"dec":-315.0,"mag":4.01,"ja":"エリダヌス座μ星","en":"","color":"B"},{"id":518,"ra":280.75,"dec":-7125.0,"mag":4.01,"ja":"くじゃく座ζ星","en":"","color":"K"},{"id":519,"ra":25.75,"dec":5041.0,"mag":4.01,"ja":"ペルセウス座φ星","en":"","color":"B"},{"id":520,"ra":201.25,"dec":5459.0,"mag":4.01,"ja":"おおぐま座80番星","en":"アルコル","color":"A"},{"id":521,"ra":220.25,"dec":-3747.0,"mag":4.01,"ja":"ケンタウルス座b星","en":"","color":"B"},{"id":522,"ra":359.75,"dec":651.0,"mag":4.012,"ja":"うお座ω星","en":"","color":"F"},{"id":523,"ra":17.0,"dec":-5514.0,"mag":4.014,"ja":"ほうおう座ζ星","en":"Wurren","color":"B"},{"id":524,"ra":131.5,"dec":2845.0,"mag":4.018,"ja":"かに座ι星","en":"","color":"G"},{"id":525,"ra":285.25,"dec":-544.0,"mag":4.02,"ja":"わし座12番星","en":"","color":"K"},{"id":526,"ra":75.75,"dec":6026.0,"mag":4.02,"ja":"きりん座β星","en":"","color":"G"},{"id":527,"ra":244.75,"dec":-5009.0,"mag":4.02,"ja":"じょうぎ座γ2星","en":"","color":"K"},{"id":528,"ra":271.25,"dec":-230.0,"mag":4.02,"ja":"へびつかい座70番星","en":"","color":"K"},{"id":529,"ra":132.5,"dec":-2742.0,"mag":4.02,"ja":"らしんばん座γ星","en":"","color":"K"},{"id":530,"ra":62.75,"dec":-650.0,"mag":4.026,"ja":"エリダヌス座ο1星","en":"ベイド","color":"F"},{"id":531,"ra":193.5,"dec":-5710.0,"mag":4.03,"ja":"みなみじゅうじ座μ星","en":"","color":"B"},{"id":532,"ra":308.25,"dec":1118.0,"mag":4.03,"ja":"いるか座ε星","en":"Aldulfin","color":"B"},{"id":533,"ra":338.75,"dec":-7.0,"mag":4.04,"ja":"みずがめ座η星","en":"","color":"B"},{"id":534,"ra":170.25,"dec":601.0,"mag":4.04,"ja":"しし座σ星","en":"","color":"B"},{"id":535,"ra":176.25,"dec":631.0,"mag":4.04,"ja":"おとめ座ν星","en":"","color":"M"},{"id":536,"ra":342.25,"dec":-1335.0,"mag":4.05,"ja":"みずがめ座τ2星","en":"","color":"K"},{"id":537,"ra":216.25,"dec":5151.0,"mag":4.05,"ja":"うしかい座θ星","en":"アセルス・プリムス","color":"F"},{"id":538,"ra":207.25,"dec":1547.0,"mag":4.05,"ja":"うしかい座υ星","en":"","color":"K"},{"id":539,"ra":215.0,"dec":-3753.0,"mag":4.05,"ja":"ケンタウルス座ψ星","en":"","color":"A"},{"id":540,"ra":219.25,"dec":-4925.0,"mag":4.05,"ja":"おおかみ座ρ星","en":"","color":"B"},{"id":541,"ra":47.25,"dec":4936.0,"mag":4.05,"ja":"ペルセウス座ι星","en":"","color":"F"},{"id":542,"ra":131.0,"dec":-4238.0,"mag":4.05,"ja":"ほ座d星","en":"","color":"G"},{"id":543,"ra":59.5,"dec":3547.0,"mag":4.06,"ja":"ペルセウス座ξ星","en":"メンキブ","color":"O"},{"id":544,"ra":254.75,"dec":-5309.0,"mag":4.06,"ja":"さいだん座ε1星","en":"","color":"K"},{"id":545,"ra":171.0,"dec":-1741.0,"mag":4.06,"ja":"コップ座γ星","en":"","color":"A"},{"id":546,"ra":184.5,"dec":-6400.0,"mag":4.06,"ja":"みなみじゅうじ座ζ星","en":"","color":"B"},{"id":547,"ra":113.75,"dec":2653.0,"mag":4.06,"ja":"ふたご座υ星","en":"","color":"K"},{"id":548,"ra":184.25,"dec":-6757.0,"mag":4.06,"ja":"はえ座ε星","en":"","color":"M"},{"id":549,"ra":74.0,"dec":1330.0,"mag":4.06,"ja":"オリオン座ο2星","en":"","color":"K"},{"id":550,"ra":220.75,"dec":-3510.0,"mag":4.06,"ja":"ケンタウルス座c1星","en":"","color":"K"},{"id":551,"ra":124.50000000000001,"dec":-7655.0,"mag":4.066,"ja":"カメレオン座α星","en":"","color":"F"},{"id":552,"ra":316.25,"dec":-1713.0,"mag":4.07,"ja":"やぎ座θ星","en":"","color":"A"},{"id":553,"ra":229.25,"dec":-5848.0,"mag":4.07,"ja":"コンパス座β星","en":"","color":"A"},{"id":554,"ra":164.75,"dec":-1817.0,"mag":4.07,"ja":"コップ座α星","en":"アルケス","color":"K"},{"id":555,"ra":227.0,"dec":-4516.0,"mag":4.07,"ja":"おおかみ座λ星","en":"","color":"B"},{"id":556,"ra":103.5,"dec":-1202.0,"mag":4.08,"ja":"おおいぬ座θ星","en":"","color":"K"},{"id":557,"ra":39.75,"dec":19.0,"mag":4.08,"ja":"くじら座δ星","en":"","color":"B"},{"id":558,"ra":45.5,"dec":-2337.0,"mag":4.08,"ja":"エリダヌス座τ3星","en":"","color":"A"},{"id":559,"ra":283.75,"dec":4356.0,"mag":4.08,"ja":"こと座R星","en":"","color":"M"},{"id":560,"ra":320.5,"dec":1948.0,"mag":4.08,"ja":"ペガスス座1番星","en":"","color":"K"},{"id":561,"ra":214.0,"dec":-600.0,"mag":4.08,"ja":"おとめ座ι星","en":"シュルマ","color":"F"},{"id":562,"ra":143.5,"dec":-5913.0,"mag":4.08,"ja":"りゅうこつ座h星","en":"","color":"B"},{"id":563,"ra":287.25,"dec":-3754.0,"mag":4.087,"ja":"みなみのかんむり座α星","en":"メリディアナ","color":"A"},{"id":564,"ra":35.25,"dec":-6839.0,"mag":4.09,"ja":"みずへび座δ星","en":"","color":"A"},{"id":565,"ra":84.0,"dec":917.0,"mag":4.09,"ja":"オリオン座φ2星","en":"","color":"G"},{"id":566,"ra":237.0,"dec":1808.0,"mag":4.09,"ja":"へび座κ星","en":"Gudja","color":"M"},{"id":567,"ra":24.0,"dec":4124.0,"mag":4.1,"ja":"アンドロメダ座υ星","en":"Titawin","color":"F"},{"id":568,"ra":277.0,"dec":-4904.0,"mag":4.1,"ja":"ぼうえんきょう座ζ星","en":"","color":"G"},{"id":569,"ra":117.25,"dec":-4622.0,"mag":4.1,"ja":"とも座P星","en":"","color":"B"},{"id":570,"ra":158.75,"dec":-7836.0,"mag":4.11,"ja":"カメレオン座γ星","en":"","color":"M"},{"id":571,"ra":40.0,"dec":-3951.0,"mag":4.11,"ja":"エリダヌス座ι星","en":"","color":"K"},{"id":572,"ra":345.0,"dec":-5245.0,"mag":4.11,"ja":"つる座ζ星","en":"","color":"G"},{"id":573,"ra":147.75,"dec":-1450.0,"mag":4.11,"ja":"うみへび座υ1星","en":"Zhang","color":"G"},{"id":574,"ra":41.0,"dec":4913.0,"mag":4.11,"ja":"ペルセウス座θ星","en":"","color":"F"},{"id":575,"ra":234.0,"dec":-6619.0,"mag":4.11,"ja":"みなみのさんかく座ε星","en":"","color":"K"},{"id":576,"ra":129.25,"dec":-4259.0,"mag":4.11,"ja":"ほ座e星","en":"","color":"A"},{"id":577,"ra":287.5,"dec":-3920.0,"mag":4.117,"ja":"みなみのかんむり座β星","en":"","color":"K"},{"id":578,"ra":105.75,"dec":-1537.0,"mag":4.12,"ja":"おおいぬ座γ星","en":"ムリフェイン","color":"B"},{"id":579,"ra":312.75,"dec":-2655.0,"mag":4.12,"ja":"やぎ座ω星","en":"","color":"M"},{"id":580,"ra":337.25,"dec":-4344.0,"mag":4.12,"ja":"つる座δ2星","en":"","color":"M"},{"id":581,"ra":39.75,"dec":-6816.0,"mag":4.12,"ja":"みずへび座ε星","en":"","color":"B"},{"id":582,"ra":90.5,"dec":938.0,"mag":4.12,"ja":"オリオン座μ星","en":"","color":"A"},{"id":583,"ra":63.5,"dec":4824.0,"mag":4.12,"ja":"ペルセウス座μ星","en":"","color":"G"},{"id":584,"ra":354.75,"dec":537.0,"mag":4.12,"ja":"うお座ι星","en":"","color":"F"},{"id":585,"ra":298.75,"dec":-4152.0,"mag":4.12,"ja":"いて座ι星","en":"","color":"K"},{"id":586,"ra":181.25,"dec":843.0,"mag":4.12,"ja":"おとめ座ο星","en":"","color":"G"},{"id":587,"ra":97.0,"dec":2012.0,"mag":4.13,"ja":"ふたご座ν星","en":"","color":"B"},{"id":588,"ra":238.25,"dec":-1643.0,"mag":4.13,"ja":"てんびん座θ星","en":"","color":"K"},{"id":589,"ra":341.5,"dec":-8122.0,"mag":4.13,"ja":"はちぶんぎ座β星","en":"","color":"A"},{"id":590,"ra":80.75,"dec":-748.0,"mag":4.13,"ja":"オリオン座29番星","en":"","color":"G"},{"id":591,"ra":355.0,"dec":4420.0,"mag":4.138,"ja":"アンドロメダ座κ星","en":"","color":"B"},{"id":592,"ra":311.5,"dec":-2516.0,"mag":4.14,"ja":"やぎ座ψ星","en":"","color":"F"},{"id":593,"ra":233.0,"dec":3121.0,"mag":4.14,"ja":"かんむり座θ星","en":"","color":"B"},{"id":594,"ra":239.25,"dec":2652.0,"mag":4.14,"ja":"かんむり座ε星","en":"","color":"K"},{"id":595,"ra":181.5,"dec":-6436.0,"mag":4.14,"ja":"みなみじゅうじ座η星","en":"","color":"F"},{"id":596,"ra":129.25,"dec":542.0,"mag":4.14,"ja":"うみへび座δ星","en":"","color":"A"},{"id":597,"ra":333.75,"dec":3744.0,"mag":4.14,"ja":"とかげ座1番星","en":"","color":"K"},{"id":598,"ra":326.0,"dec":2538.0,"mag":4.14,"ja":"ペガスス座κ星","en":"","color":"F"},{"id":599,"ra":52.5,"dec":1256.0,"mag":4.14,"ja":"おうし座5番星","en":"","color":"K"},{"id":600,"ra":260.75,"dec":3708.0,"mag":4.15,"ja":"ヘルクレス座ρ星","en":"","color":"B"},{"id":601,"ra":107.75,"dec":-29.0,"mag":4.15,"ja":"いっかくじゅう座δ星","en":"","color":"A"},{"id":602,"ra":249.00000000000003,"dec":-3515.0,"mag":4.156,"ja":"さそり座H星","en":"","color":"K"},{"id":603,"ra":334.0,"dec":-746.0,"mag":4.16,"ja":"みずがめ座θ星","en":"アンカ","color":"G"},{"id":604,"ra":8.0,"dec":6255.0,"mag":4.16,"ja":"カシオペヤ座κ星","en":"","color":"B"},{"id":605,"ra":91.0,"dec":2315.0,"mag":4.16,"ja":"ふたご座1番星","en":"","color":"G"},{"id":606,"ra":112.25,"dec":3147.0,"mag":4.16,"ja":"ふたご座ρ星","en":"","color":"F"},{"id":607,"ra":261.5,"dec":-2410.0,"mag":4.16,"ja":"へびつかい座44番星","en":"","color":"A"},{"id":608,"ra":241.0,"dec":-1122.0,"mag":4.16,"ja":"さそり座ξ星","en":"グラフィアス","color":"F"},{"id":609,"ra":57.25,"dec":-3612.0,"mag":4.17,"ja":"エリダヌス座g星","en":"","color":"G"},{"id":610,"ra":214.0,"dec":4605.0,"mag":4.18,"ja":"うしかい座λ星","en":"玄戈","color":"A"},{"id":611,"ra":340.0,"dec":-2702.0,"mag":4.18,"ja":"みなみのうお座ε星","en":"","color":"B"},{"id":612,"ra":56.5,"dec":2356.0,"mag":4.18,"ja":"おうし座23番星","en":"メローペ","color":"B"},{"id":613,"ra":207.25,"dec":-3427.0,"mag":4.19,"ja":"ケンタウルス座2番星","en":"","color":"M"},{"id":614,"ra":333.75,"dec":5702.0,"mag":4.19,"ja":"ケフェウス座ε星","en":"","color":"F"},{"id":615,"ra":281.25,"dec":2032.0,"mag":4.19,"ja":"ヘルクレス座110番星","en":"","color":"F"},{"id":616,"ra":248.5,"dec":4226.0,"mag":4.2,"ja":"ヘルクレス座σ星","en":"","color":"B"},{"id":617,"ra":156.75,"dec":3642.0,"mag":4.2,"ja":"こじし座β星","en":"","color":"G"},{"id":618,"ra":82.5,"dec":556.0,"mag":4.2,"ja":"オリオン座32番星","en":"","color":"B"},{"id":619,"ra":341.5,"dec":1210.0,"mag":4.2,"ja":"ペガスス座ξ星","en":"","color":"F"},{"id":620,"ra":343.75,"dec":-3232.0,"mag":4.2,"ja":"みなみのうお座δ星","en":"","color":"G"},{"id":621,"ra":119.0,"dec":-2252.0,"mag":4.2,"ja":"とも座11番星","en":"","color":"F"},{"id":622,"ra":348.75,"dec":-905.0,"mag":4.21,"ja":"みずがめ座ψ1星","en":"","color":"K"},{"id":623,"ra":52.25,"dec":5956.0,"mag":4.21,"ja":"きりん座CS星","en":"","color":"B"},{"id":624,"ra":66.25,"dec":2217.0,"mag":4.21,"ja":"おうし座κ1星","en":"","color":"A"},{"id":625,"ra":251.25,"dec":8202.0,"mag":4.21,"ja":"こぐま座ε星","en":"","color":"G"},{"id":626,"ra":213.0,"dec":-1016.0,"mag":4.21,"ja":"おとめ座κ星","en":"Kang","color":"K"},{"id":627,"ra":348.5,"dec":-602.0,"mag":4.22,"ja":"みずがめ座φ星","en":"","color":"M"},{"id":628,"ra":307.25,"dec":6259.0,"mag":4.22,"ja":"ケフェウス座θ星","en":"","color":"A"},{"id":629,"ra":311.25,"dec":3043.0,"mag":4.22,"ja":"はくちょう座52番星","en":"","color":"K"},{"id":630,"ra":319.25,"dec":3923.0,"mag":4.22,"ja":"はくちょう座σ星","en":"","color":"B"},{"id":631,"ra":275.0,"dec":7120.0,"mag":4.22,"ja":"りゅう座φ星","en":"","color":"A"},{"id":632,"ra":56.5,"dec":-2314.0,"mag":4.22,"ja":"エリダヌス座τ6星","en":"","color":"F"},{"id":633,"ra":241.50000000000003,"dec":-3648.0,"mag":4.22,"ja":"おおかみ座θ星","en":"","color":"B"},{"id":634,"ra":246.75,"dec":-1827.0,"mag":4.22,"ja":"へびつかい座χ星","en":"","color":"B"},{"id":635,"ra":321.5,"dec":-6521.0,"mag":4.22,"ja":"くじゃく座γ星","en":"","color":"F"},{"id":636,"ra":283.0,"dec":-6211.0,"mag":4.22,"ja":"くじゃく座λ星","en":"","color":"B"},{"id":637,"ra":42.5,"dec":3819.0,"mag":4.22,"ja":"ペルセウス座16番星","en":"","color":"F"},{"id":638,"ra":281.75,"dec":-444.0,"mag":4.22,"ja":"たて座β星","en":"","color":"G"},{"id":639,"ra":118.25,"dec":-4806.0,"mag":4.22,"ja":"とも座J星","en":"","color":"B"},{"id":640,"ra":206.25,"dec":-3302.0,"mag":4.23,"ja":"ケンタウルス座1番星","en":"","color":"F"},{"id":641,"ra":286.5,"dec":-3703.0,"mag":4.23,"ja":"みなみのかんむり座γ星","en":"","color":"F"},{"id":642,"ra":326.5,"dec":4918.0,"mag":4.23,"ja":"はくちょう座π2星","en":"","color":"B"},{"id":643,"ra":115.75,"dec":2853.0,"mag":4.23,"ja":"ふたご座σ星","en":"","color":"K"},{"id":644,"ra":242.0,"dec":4456.0,"mag":4.23,"ja":"ヘルクレス座φ星","en":"","color":"B"},{"id":645,"ra":247.75,"dec":-3442.0,"mag":4.23,"ja":"さそり座N星","en":"","color":"B"},{"id":646,"ra":5.0,"dec":-6452.0,"mag":4.23,"ja":"きょしちょう座ζ星","en":"","color":"F"},{"id":647,"ra":210.25,"dec":132.0,"mag":4.23,"ja":"おとめ座τ星","en":"","color":"A"},{"id":648,"ra":250.74999999999997,"dec":-7731.0,"mag":4.24,"ja":"ふうちょう座β星","en":"","color":"K"},{"id":649,"ra":304.25,"dec":-1230.0,"mag":4.24,"ja":"やぎ座α1星","en":"アルゲディ","color":"G"},{"id":650,"ra":41.0,"dec":-1351.0,"mag":4.24,"ja":"くじら座π星","en":"","color":"B"},{"id":651,"ra":184.5,"dec":-7918.0,"mag":4.24,"ja":"カメレオン座β星","en":"","color":"B"},{"id":652,"ra":36.5,"dec":-4742.0,"mag":4.24,"ja":"エリダヌス座κ星","en":"","color":"B"},{"id":653,"ra":265.25,"dec":-1252.0,"mag":4.24,"ja":"へび座ο星","en":"","color":"A"},{"id":654,"ra":17.0,"dec":8615.0,"mag":4.244,"ja":"こぐま座2番星","en":"","color":"K"},{"id":655,"ra":156.75,"dec":-3104.0,"mag":4.25,"ja":"ポンプ座α星","en":"","color":"K"},{"id":656,"ra":89.75,"dec":4556.0,"mag":4.25,"ja":"ぎょしゃ座π星","en":"","color":"M"},{"id":657,"ra":188.25,"dec":4121.0,"mag":4.25,"ja":"りょうけん座β星","en":"カラ","color":"G"},{"id":658,"ra":197.75,"dec":2752.0,"mag":4.25,"ja":"かみのけ座β星","en":"","color":"F"},{"id":659,"ra":64.0,"dec":-5129.0,"mag":4.25,"ja":"かじき座γ星","en":"","color":"F"},{"id":660,"ra":77.25,"dec":-845.0,"mag":4.25,"ja":"エリダヌス座λ星","en":"","color":"B"},{"id":661,"ra":125.5,"dec":4311.0,"mag":4.25,"ja":"やまねこ座31番星","en":"Alsciaukat","color":"K"},{"id":662,"ra":61.49999999999999,"dec":5021.0,"mag":4.25,"ja":"ペルセウス座λ星","en":"","color":"A"},{"id":663,"ra":69.0,"dec":4115.0,"mag":4.25,"ja":"ペルセウス座58番星","en":"","color":"G"},{"id":664,"ra":68.75,"dec":1009.0,"mag":4.25,"ja":"おうし座88番星","en":"","color":"A"},{"id":665,"ra":18.75,"dec":-6852.0,"mag":4.25,"ja":"きょしちょう座κ星","en":"","color":"F"},{"id":666,"ra":216.75,"dec":7541.0,"mag":4.25,"ja":"こぐま座5番星","en":"","color":"K"},{"id":667,"ra":193.25,"dec":-4010.0,"mag":4.25,"ja":"ケンタウルス座n星","en":"","color":"A"},{"id":668,"ra":134.5,"dec":1151.0,"mag":4.259,"ja":"かに座α星","en":"アクベンス","color":"A"},{"id":669,"ra":17.25,"dec":4714.0,"mag":4.26,"ja":"アンドロメダ座φ星","en":"","color":"B"},{"id":670,"ra":49.75,"dec":-4304.0,"mag":4.26,"ja":"エリダヌス座e星","en":"","color":"G"},{"id":671,"ra":53.25,"dec":-2137.0,"mag":4.26,"ja":"エリダヌス座τ5星","en":"","color":"B"},{"id":672,"ra":270.25,"dec":2135.0,"mag":4.26,"ja":"ヘルクレス座95番星","en":"","color":"G"},{"id":673,"ra":26.25,"dec":909.0,"mag":4.26,"ja":"うお座ο星","en":"Torcular","color":"G"},{"id":674,"ra":264.0,"dec":-3838.0,"mag":4.26,"ja":"さそり座Q星","en":"","color":"G"},{"id":675,"ra":70.5,"dec":2257.0,"mag":4.264,"ja":"おうし座τ星","en":"","color":"B"},{"id":676,"ra":196.5,"dec":-4954.0,"mag":4.27,"ja":"ケンタウルス座ξ2星","en":"","color":"B"},{"id":677,"ra":41.0,"dec":1006.0,"mag":4.27,"ja":"くじら座μ星","en":"","color":"F"},{"id":678,"ra":311.5,"dec":1607.0,"mag":4.27,"ja":"いるか座γ星","en":"","color":"K"},{"id":679,"ra":229.5,"dec":-4752.0,"mag":4.27,"ja":"おおかみ座μ星","en":"","color":"B"},{"id":680,"ra":351.75,"dec":622.0,"mag":4.27,"ja":"うお座θ星","en":"","color":"K"},{"id":681,"ra":14.5,"dec":-2921.0,"mag":4.27,"ja":"ちょうこくしつ座α星","en":"","color":"B"},{"id":682,"ra":63.75,"dec":853.0,"mag":4.27,"ja":"おうし座μ星","en":"","color":"B"},{"id":683,"ra":69.5,"dec":1230.0,"mag":4.27,"ja":"おうし座90番星","en":"","color":"A"},{"id":684,"ra":320.5,"dec":-1650.0,"mag":4.28,"ja":"やぎ座ι星","en":"","color":"G"},{"id":685,"ra":303.25,"dec":5634.0,"mag":4.28,"ja":"はくちょう座33番星","en":"","color":"A"},{"id":686,"ra":346.5,"dec":-4331.0,"mag":4.28,"ja":"つる座θ星","en":"","color":"F"},{"id":687,"ra":178.0,"dec":-3354.0,"mag":4.28,"ja":"うみへび座β星","en":"","color":"B"},{"id":688,"ra":261.75,"dec":-2952.0,"mag":4.28,"ja":"へびつかい座45番星","en":"","color":"F"},{"id":689,"ra":332.25,"dec":3310.0,"mag":4.28,"ja":"ペガスス座π2星","en":"","color":"F"},{"id":690,"ra":15.500000000000002,"dec":753.0,"mag":4.28,"ja":"うお座ε星","en":"","color":"K"},{"id":691,"ra":66.5,"dec":2248.0,"mag":4.28,"ja":"おうし座υ星","en":"","color":"A"},{"id":692,"ra":290.75,"dec":-4447.0,"mag":4.281,"ja":"いて座β2星","en":"アルカブ・ポステリオル","color":"F"},{"id":693,"ra":326.25,"dec":6107.0,"mag":4.289,"ja":"ケフェウス座ν星","en":"","color":"A"},{"id":694,"ra":7.750000000000001,"dec":-6257.0,"mag":4.289,"ja":"きょしちょう座β1星","en":"","color":"B"},{"id":695,"ra":354.5,"dec":4316.0,"mag":4.29,"ja":"アンドロメダ座ι星","en":"","color":"B"},{"id":696,"ra":331.5,"dec":-1352.0,"mag":4.29,"ja":"みずがめ座ι星","en":"","color":"B"},{"id":697,"ra":73.5,"dec":6620.0,"mag":4.29,"ja":"きりん座α星","en":"","color":"O"},{"id":698,"ra":330.75,"dec":6437.0,"mag":4.29,"ja":"ケフェウス座ξ星","en":"クラー","color":"A"},{"id":699,"ra":79.75,"dec":-1310.0,"mag":4.29,"ja":"うさぎ座λ星","en":"","color":"B"},{"id":700,"ra":247.75,"dec":-1636.0,"mag":4.29,"ja":"へびつかい座φ星","en":"","color":"G"},{"id":701,"ra":337.75,"dec":-3220.0,"mag":4.29,"ja":"みなみのうお座β星","en":"","color":"A"},{"id":702,"ra":54.0,"dec":23.0,"mag":4.29,"ja":"おうし座10番星","en":"","color":"F"},{"id":703,"ra":236.0,"dec":7747.0,"mag":4.29,"ja":"こぐま座ζ星","en":"","color":"A"},{"id":704,"ra":159.75,"dec":-5536.0,"mag":4.29,"ja":"ほ座x星","en":"","color":"G"},{"id":705,"ra":37.0,"dec":827.0,"mag":4.3,"ja":"くじら座ξ2星","en":"","color":"B"},{"id":706,"ra":188.0,"dec":-1611.0,"mag":4.3,"ja":"からす座η星","en":"","color":"F"},{"id":707,"ra":130.75,"dec":323.0,"mag":4.3,"ja":"うみへび座η星","en":"","color":"B"},{"id":708,"ra":163.75,"dec":2444.0,"mag":4.3,"ja":"しし座54番星","en":"","color":"A"},{"id":709,"ra":174.0,"dec":-49.0,"mag":4.3,"ja":"しし座υ星","en":"","color":"G"},{"id":710,"ra":283.5,"dec":3653.0,"mag":4.3,"ja":"こと座δ2星","en":"","color":"M"},{"id":711,"ra":56.25,"dec":2428.0,"mag":4.3,"ja":"おうし座19番星","en":"タイゲタ","color":"B"},{"id":712,"ra":66.25,"dec":1755.0,"mag":4.3,"ja":"おうし座δ3星","en":"","color":"A"},{"id":713,"ra":177.25,"dec":-6347.0,"mag":4.3,"ja":"ケンタウルス座j星","en":"","color":"B"},{"id":714,"ra":215.0,"dec":-5623.0,"mag":4.3,"ja":"ケンタウルス座v星","en":"","color":"B"},{"id":715,"ra":57.0,"dec":-3737.0,"mag":4.3,"ja":"エリダヌス座f星","en":"","color":"A"},{"id":716,"ra":216.5,"dec":-8340.0,"mag":4.304,"ja":"はちぶんぎ座δ星","en":"","color":"K"},{"id":717,"ra":231.0,"dec":3722.0,"mag":4.307,"ja":"うしかい座μ1星","en":"アルカルロプス","color":"F"},{"id":718,"ra":309.5,"dec":-106.0,"mag":4.31,"ja":"わし座71番星","en":"","color":"G"},{"id":719,"ra":142.75,"dec":2258.0,"mag":4.31,"ja":"しし座λ星","en":"アルテルフ","color":"K"},{"id":720,"ra":241.75,"dec":-2052.0,"mag":4.31,"ja":"さそり座ω2星","en":"","color":"G"},{"id":721,"ra":130.0,"dec":-5945.0,"mag":4.31,"ja":"りゅうこつ座d星","en":"","color":"B"},{"id":722,"ra":93.75,"dec":2929.0,"mag":4.32,"ja":"ぎょしゃ座κ星","en":"","color":"G"},{"id":723,"ra":207.75,"dec":-3259.0,"mag":4.32,"ja":"ケンタウルス座3番星","en":"","color":"B"},{"id":724,"ra":180.75,"dec":-6318.0,"mag":4.32,"ja":"みなみじゅうじ座θ1星","en":"","color":"A"},{"id":725,"ra":70.0,"dec":-1940.0,"mag":4.32,"ja":"エリダヌス座54番星","en":"","color":"M"},{"id":726,"ra":131.5,"dec":-1332.0,"mag":4.32,"ja":"うみへび座12番星","en":"","color":"G"},{"id":727,"ra":222.75,"dec":-4334.0,"mag":4.32,"ja":"おおかみ座ο星","en":"","color":"B"},{"id":728,"ra":54.0,"dec":4811.0,"mag":4.32,"ja":"ペルセウス座ψ星","en":"","color":"B"},{"id":729,"ra":260.0,"dec":-1250.0,"mag":4.32,"ja":"へび座ν星","en":"","color":"A"},{"id":730,"ra":83.0,"dec":1835.0,"mag":4.32,"ja":"おうし座119番星","en":"","color":"M"},{"id":731,"ra":112.0,"dec":855.0,"mag":4.33,"ja":"こいぬ座γ星","en":"","color":"K"},{"id":732,"ra":17.75,"dec":5508.0,"mag":4.33,"ja":"カシオペヤ座θ星","en":"","color":"A"},{"id":733,"ra":216.5,"dec":-4522.0,"mag":4.33,"ja":"おおかみ座τ2星","en":"","color":"A"},{"id":734,"ra":274.75,"dec":3603.0,"mag":4.33,"ja":"こと座κ星","en":"","color":"K"},{"id":735,"ra":258.75,"dec":-2636.0,"mag":4.33,"ja":"へびつかい座36番星","en":"Guniibuu","color":"K"},{"id":736,"ra":272.0,"dec":-6340.0,"mag":4.33,"ja":"くじゃく座π星","en":"","color":"A"},{"id":737,"ra":193.25,"dec":-4856.0,"mag":4.33,"ja":"ケンタウルス座e星","en":"","color":"K"},{"id":738,"ra":97.75,"dec":-2325.0,"mag":4.34,"ja":"おおいぬ座ξ1星","en":"","color":"B"},{"id":739,"ra":210.25,"dec":-4536.0,"mag":4.34,"ja":"ケンタウルス座υ2星","en":"","color":"F"},{"id":740,"ra":125.00000000000001,"dec":-7729.0,"mag":4.34,"ja":"カメレオン座θ星","en":"","color":"K"},{"id":741,"ra":86.0,"dec":-6544.0,"mag":4.34,"ja":"かじき座δ星","en":"","color":"A"},{"id":742,"ra":281.75,"dec":1810.0,"mag":4.34,"ja":"ヘルクレス座111番星","en":"","color":"A"},{"id":743,"ra":337.25,"dec":4742.0,"mag":4.34,"ja":"とかげ座5番星","en":"","color":"M"},{"id":744,"ra":234.5,"dec":-4234.0,"mag":4.34,"ja":"おおかみ座ω星","en":"","color":"K"},{"id":745,"ra":281.0,"dec":3736.0,"mag":4.34,"ja":"こと座ζ星","en":"","color":"A"},{"id":746,"ra":261.5,"dec":408.0,"mag":4.34,"ja":"へびつかい座σ星","en":"","color":"K"},{"id":747,"ra":326.0,"dec":1721.0,"mag":4.34,"ja":"ペガスス座9番星","en":"","color":"G"},{"id":748,"ra":144.0,"dec":-4921.0,"mag":4.34,"ja":"ほ座M星","en":"","color":"A"},{"id":749,"ra":139.0,"dec":-5732.0,"mag":4.34,"ja":"りゅうこつ座g星","en":"","color":"M"},{"id":750,"ra":263.0,"dec":8635.0,"mag":4.348,"ja":"こぐま座δ星","en":"イルドゥン","color":"A"},{"id":751,"ra":98.5,"dec":-5258.0,"mag":4.35,"ja":"りゅうこつ座N星","en":"","color":"B"},{"id":752,"ra":132.0,"dec":550.0,"mag":4.35,"ja":"うみへび座ρ星","en":"","color":"A"},{"id":753,"ra":229.25,"dec":-3008.0,"mag":4.35,"ja":"おおかみ座2番星","en":"","color":"K"},{"id":754,"ra":104.25,"dec":5825.0,"mag":4.35,"ja":"やまねこ座15番星","en":"","color":"G"},{"id":755,"ra":289.0,"dec":3808.0,"mag":4.35,"ja":"こと座θ星","en":"","color":"K"},{"id":756,"ra":72.5,"dec":854.0,"mag":4.35,"ja":"オリオン座π2星","en":"","color":"A"},{"id":757,"ra":275.75,"dec":-6129.0,"mag":4.35,"ja":"くじゃく座ξ星","en":"","color":"M"},{"id":758,"ra":326.0,"dec":-3301.0,"mag":4.35,"ja":"みなみのうお座ι星","en":"","color":"B"},{"id":759,"ra":121.75,"dec":-6837.0,"mag":4.35,"ja":"とびうお座ε星","en":"","color":"B"},{"id":760,"ra":9.0,"dec":3343.0,"mag":4.36,"ja":"アンドロメダ座π星","en":"","color":"B"},{"id":761,"ra":294.0,"dec":-117.0,"mag":4.36,"ja":"わし座ι星","en":"","color":"B"},{"id":762,"ra":104.0,"dec":-1703.0,"mag":4.36,"ja":"おおいぬ座ι星","en":"","color":"B"},{"id":763,"ra":211.5,"dec":-4110.0,"mag":4.36,"ja":"ケンタウルス座χ星","en":"","color":"B"},{"id":764,"ra":33.25,"dec":850.0,"mag":4.36,"ja":"くじら座ξ1星","en":"","color":"G"},{"id":765,"ra":89.25,"dec":-3516.0,"mag":4.36,"ja":"はと座γ星","en":"","color":"B"},{"id":766,"ra":73.0,"dec":-527.0,"mag":4.36,"ja":"エリダヌス座ω星","en":"","color":"A"},{"id":767,"ra":78.25,"dec":-1256.0,"mag":4.36,"ja":"うさぎ座κ星","en":"","color":"B"},{"id":768,"ra":122.0,"dec":-259.0,"mag":4.36,"ja":"いっかくじゅう座ζ星","en":"","color":"G"},{"id":769,"ra":52.5,"dec":4759.0,"mag":4.36,"ja":"ペルセウス座σ星","en":"","color":"K"},{"id":770,"ra":10.75,"dec":-5727.0,"mag":4.36,"ja":"ほうおう座η星","en":"","color":"A"},{"id":771,"ra":61.0,"dec":2204.0,"mag":4.36,"ja":"おうし座37番星","en":"","color":"K"},{"id":772,"ra":9.5,"dec":2918.0,"mag":4.37,"ja":"アンドロメダ座ε星","en":"","color":"G"},{"id":773,"ra":109.5,"dec":-2457.0,"mag":4.37,"ja":"おおいぬ座τ星","en":"","color":"O"},{"id":774,"ra":94.0,"dec":-3508.0,"mag":4.37,"ja":"はと座κ星","en":"","color":"G"},{"id":775,"ra":272.0,"dec":2048.0,"mag":4.37,"ja":"ヘルクレス座102番星","en":"","color":"B"},{"id":776,"ra":0.25,"dec":-600.0,"mag":4.37,"ja":"うお座30番星","en":"","color":"M"},{"id":777,"ra":299.75,"dec":-3516.0,"mag":4.37,"ja":"いて座θ1星","en":"","color":"B"},{"id":778,"ra":353.0,"dec":-3749.0,"mag":4.37,"ja":"ちょうこくしつ座β星","en":"","color":"B"},{"id":779,"ra":165.0,"dec":-4213.0,"mag":4.37,"ja":"ほ座i星","en":"","color":"A"},{"id":780,"ra":351.5,"dec":-2038.0,"mag":4.38,"ja":"みずがめ座99番星","en":"","color":"K"},{"id":781,"ra":197.25,"dec":-532.0,"mag":4.38,"ja":"おとめ座θ星","en":"","color":"A"},{"id":782,"ra":57.25,"dec":6531.0,"mag":4.39,"ja":"きりん座BE星","en":"","color":"M"},{"id":783,"ra":120.5,"dec":220.0,"mag":4.39,"ja":"こいぬ座G星","en":"","color":"K"},{"id":784,"ra":319.75,"dec":-5326.0,"mag":4.39,"ja":"インディアン座θ星","en":"","color":"A"},{"id":785,"ra":95.75,"dec":435.0,"mag":4.39,"ja":"いっかくじゅう座ε星","en":"","color":"A"},{"id":786,"ra":253.49999999999997,"dec":1009.0,"mag":4.39,"ja":"へびつかい座ι星","en":"","color":"B"},{"id":787,"ra":260.25,"dec":-2106.0,"mag":4.39,"ja":"へびつかい座ξ星","en":"","color":"F"},{"id":788,"ra":83.5,"dec":929.0,"mag":4.39,"ja":"オリオン座φ1星","en":"","color":"B"},{"id":789,"ra":28.25,"dec":-4618.0,"mag":4.39,"ja":"ほうおう座ψ星","en":"","color":"M"},{"id":790,"ra":295.25,"dec":1728.0,"mag":4.39,"ja":"や座β星","en":"","color":"G"},{"id":791,"ra":225.5,"dec":205.0,"mag":4.39,"ja":"おとめ座110番星","en":"","color":"K"},{"id":792,"ra":91.75,"dec":1446.0,"mag":4.397,"ja":"オリオン座ν星","en":"","color":"B"},{"id":793,"ra":288.25,"dec":3908.0,"mag":4.398,"ja":"こと座η星","en":"アラドファル","color":"B"},{"id":794,"ra":329.25,"dec":-5459.0,"mag":4.4,"ja":"インディアン座δ星","en":"","color":"F"},{"id":795,"ra":88.5,"dec":2016.0,"mag":4.4,"ja":"オリオン座χ1星","en":"","color":"G"},{"id":796,"ra":284.0,"dec":-6714.0,"mag":4.4,"ja":"くじゃく座κ星","en":"","color":"F"},{"id":797,"ra":351.25,"dec":2324.0,"mag":4.4,"ja":"ペガスス座υ星","en":"Alkarab","color":"F"},{"id":798,"ra":117.0,"dec":-2556.0,"mag":4.4,"ja":"とも座o星","en":"","color":"B"},{"id":799,"ra":122.25,"dec":-1914.0,"mag":4.4,"ja":"とも座16番星","en":"","color":"B"},{"id":800,"ra":349.25,"dec":-910.0,"mag":4.41,"ja":"みずがめ座ψ2星","en":"","color":"B"},{"id":801,"ra":102.25,"dec":-5337.0,"mag":4.41,"ja":"りゅうこつ座V415星","en":"","color":"G"},{"id":802,"ra":215.75,"dec":-3930.0,"mag":4.41,"ja":"ケンタウルス座V761星","en":"","color":"B"},{"id":803,"ra":319.25,"dec":3453.0,"mag":4.41,"ja":"はくちょう座υ星","en":"","color":"B"},{"id":804,"ra":107.75,"dec":3014.0,"mag":4.41,"ja":"ふたご座τ星","en":"","color":"K"},{"id":805,"ra":262.5,"dec":2606.0,"mag":4.41,"ja":"ヘルクレス座λ星","en":"マシム","color":"K"},{"id":806,"ra":269.5,"dec":3011.0,"mag":4.41,"ja":"ヘルクレス座ν星","en":"","color":"F"},{"id":807,"ra":349.5,"dec":-3231.0,"mag":4.41,"ja":"ちょうこくしつ座γ星","en":"","color":"K"},{"id":808,"ra":14.25,"dec":2325.0,"mag":4.42,"ja":"アンドロメダ座η星","en":"","color":"G"},{"id":809,"ra":99.25,"dec":-1814.0,"mag":4.42,"ja":"おおいぬ座ν3星","en":"","color":"K"},{"id":810,"ra":108.5,"dec":-2621.0,"mag":4.42,"ja":"おおいぬ座27番星","en":"","color":"B"},{"id":811,"ra":222.5,"dec":-2757.0,"mag":4.42,"ja":"うみへび座58番星","en":"","color":"K"},{"id":812,"ra":335.75,"dec":5213.0,"mag":4.42,"ja":"とかげ座β星","en":"","color":"G"},{"id":813,"ra":165.5,"dec":2010.0,"mag":4.42,"ja":"しし座60番星","en":"","color":"A"},{"id":814,"ra":270.25,"dec":118.0,"mag":4.42,"ja":"へびつかい座68番星","en":"","color":"A"},{"id":815,"ra":236.5,"dec":721.0,"mag":4.42,"ja":"へび座λ星","en":"","color":"G"},{"id":816,"ra":123.49999999999999,"dec":-4020.0,"mag":4.42,"ja":"とも座h2星","en":"","color":"K"},{"id":817,"ra":311.75,"dec":-501.0,"mag":4.43,"ja":"みずがめ座3番星","en":"","color":"M"},{"id":818,"ra":74.25,"dec":5345.0,"mag":4.43,"ja":"きりん座7番星","en":"","color":"A"},{"id":819,"ra":305.75,"dec":3211.0,"mag":4.43,"ja":"はくちょう座39番星","en":"","color":"K"},{"id":820,"ra":56.5,"dec":-1206.0,"mag":4.43,"ja":"エリダヌス座π星","en":"","color":"M"},{"id":821,"ra":63.75,"dec":-739.0,"mag":4.43,"ja":"エリダヌス座ο2星","en":"ケイド","color":"K"},{"id":822,"ra":129.5,"dec":320.0,"mag":4.43,"ja":"うみへび座σ星","en":"Minchir","color":"K"},{"id":823,"ra":300.5,"dec":-2742.0,"mag":4.43,"ja":"いて座62番星","en":"","color":"M"},{"id":824,"ra":310.75,"dec":1504.0,"mag":4.434,"ja":"いるか座δ星","en":"","color":"A"},{"id":825,"ra":3.5,"dec":-1855.0,"mag":4.44,"ja":"くじら座7番星","en":"","color":"M"},{"id":826,"ra":218.0,"dec":-5027.0,"mag":4.44,"ja":"おおかみ座σ星","en":"","color":"B"},{"id":827,"ra":94.75,"dec":5900.0,"mag":4.44,"ja":"やまねこ座2番星","en":"","color":"A"},{"id":828,"ra":12.0,"dec":735.0,"mag":4.44,"ja":"うお座δ星","en":"","color":"K"},{"id":829,"ra":64.0,"dec":-5918.0,"mag":4.44,"ja":"レチクル座ε星","en":"","color":"K"},{"id":830,"ra":122.75,"dec":-3937.0,"mag":4.44,"ja":"とも座h1星","en":"","color":"K"},{"id":831,"ra":124.50000000000001,"dec":-3639.0,"mag":4.44,"ja":"とも座q星","en":"","color":"A"},{"id":832,"ra":292.0,"dec":2439.0,"mag":4.45,"ja":"こぎつね座α星","en":"アンサー","color":"M"},{"id":833,"ra":293.5,"dec":722.0,"mag":4.45,"ja":"わし座μ星","en":"","color":"K"},{"id":834,"ra":70.0,"dec":-4151.0,"mag":4.45,"ja":"ちょうこくぐ座α星","en":"","color":"F"},{"id":835,"ra":161.25,"dec":-8032.0,"mag":4.45,"ja":"カメレオン座δ2星","en":"","color":"B"},{"id":836,"ra":288.75,"dec":7321.0,"mag":4.45,"ja":"りゅう座τ星","en":"","color":"K"},{"id":837,"ra":169.0,"dec":-339.0,"mag":4.45,"ja":"しし座φ星","en":"","color":"A"},{"id":838,"ra":78.0,"dec":-1152.0,"mag":4.45,"ja":"うさぎ座ι星","en":"","color":"B"},{"id":839,"ra":248.00000000000003,"dec":-2127.0,"mag":4.45,"ja":"へびつかい座ω星","en":"","color":"A"},{"id":840,"ra":92.75,"dec":1412.0,"mag":4.45,"ja":"オリオン座ξ星","en":"","color":"B"},{"id":841,"ra":25.25,"dec":529.0,"mag":4.45,"ja":"うお座ν星","en":"","color":"K"},{"id":842,"ra":135.0,"dec":-4115.0,"mag":4.45,"ja":"ほ座w星","en":"","color":"F"},{"id":843,"ra":158.75,"dec":-5733.0,"mag":4.45,"ja":"りゅうこつ座r星","en":"","color":"K"},{"id":844,"ra":37.25,"dec":6724.0,"mag":4.46,"ja":"カシオペヤ座ι星","en":"","color":"B"},{"id":845,"ra":182.0,"dec":-5039.0,"mag":4.46,"ja":"ケンタウルス座V863星","en":"","color":"B"},{"id":846,"ra":167.75,"dec":-2249.0,"mag":4.46,"ja":"コップ座β星","en":"","color":"A"},{"id":847,"ra":58.5,"dec":-257.0,"mag":4.46,"ja":"エリダヌス座32番星","en":"","color":"G"},{"id":848,"ra":42.25,"dec":-3224.0,"mag":4.46,"ja":"ろ座β星","en":"","color":"G"},{"id":849,"ra":141.0,"dec":2610.0,"mag":4.46,"ja":"しし座κ星","en":"","color":"K"},{"id":850,"ra":78.25,"dec":251.0,"mag":4.46,"ja":"オリオン座ρ星","en":"","color":"K"},{"id":851,"ra":343.0,"dec":-3252.0,"mag":4.46,"ja":"みなみのうお座γ星","en":"","color":"A"},{"id":852,"ra":137.0,"dec":5136.0,"mag":4.46,"ja":"おおぐま座15番星","en":"","color":"A"},{"id":853,"ra":113.5,"dec":-2217.0,"mag":4.46,"ja":"HD 60532","en":"","color":"F"},{"id":854,"ra":218.5,"dec":2944.0,"mag":4.47,"ja":"うしかい座σ星","en":"Al Hamalain","color":"F"},{"id":855,"ra":97.0,"dec":-3234.0,"mag":4.47,"ja":"おおいぬ座λ星","en":"","color":"B"},{"id":856,"ra":136.25,"dec":-7236.0,"mag":4.47,"ja":"りゅうこつ座G星","en":"","color":"F"},{"id":857,"ra":177.75,"dec":-4510.0,"mag":4.47,"ja":"ケンタウルス座B星","en":"","color":"K"},{"id":858,"ra":41.25,"dec":-1834.0,"mag":4.47,"ja":"エリダヌス座τ1星","en":"","color":"F"},{"id":859,"ra":331.5,"dec":-3932.0,"mag":4.47,"ja":"つる座λ星","en":"","color":"M"},{"id":860,"ra":98.0,"dec":719.0,"mag":4.47,"ja":"いっかくじゅう座13番星","en":"","color":"A"},{"id":861,"ra":74.5,"dec":142.0,"mag":4.47,"ja":"オリオン座π6星","en":"","color":"K"},{"id":862,"ra":143.5,"dec":5203.0,"mag":4.47,"ja":"おおぐま座26番星","en":"","color":"A"},{"id":863,"ra":224.25,"dec":-420.0,"mag":4.47,"ja":"てんびん座16番星","en":"","color":"F"},{"id":864,"ra":119.5,"dec":-4914.0,"mag":4.47,"ja":"とも座V星","en":"","color":"B"},{"id":865,"ra":346.5,"dec":-2344.0,"mag":4.48,"ja":"みずがめ座86番星","en":"","color":"G"},{"id":866,"ra":11.0,"dec":4817.0,"mag":4.48,"ja":"カシオペヤ座ο星","en":"","color":"B"},{"id":867,"ra":230.75,"dec":-5919.0,"mag":4.48,"ja":"コンパス座γ星","en":"","color":"B"},{"id":868,"ra":101.75,"dec":224.0,"mag":4.48,"ja":"いっかくじゅう座18番星","en":"","color":"K"},{"id":869,"ra":245.99999999999997,"dec":-2002.0,"mag":4.48,"ja":"へびつかい座ψ星","en":"","color":"K"},{"id":870,"ra":345.75,"dec":349.0,"mag":4.48,"ja":"うお座β星","en":"フム・アル・サマカー","color":"B"},{"id":871,"ra":60.0,"dec":-6209.0,"mag":4.48,"ja":"レチクル座γ星","en":"","color":"M"},{"id":872,"ra":295.0,"dec":1800.0,"mag":4.48,"ja":"や座α星","en":"シャム","color":"G"},{"id":873,"ra":66.5,"dec":1537.0,"mag":4.48,"ja":"おうし座71番星","en":"","color":"F"},{"id":874,"ra":355.5,"dec":-1432.0,"mag":4.49,"ja":"みずがめ座ω2星","en":"","color":"B"},{"id":875,"ra":220.0,"dec":1625.0,"mag":4.49,"ja":"うしかい座π星","en":"","color":"B"},{"id":876,"ra":316.75,"dec":-2500.0,"mag":4.49,"ja":"やぎ座24番星","en":"","color":"K"},{"id":877,"ra":294.0,"dec":5013.0,"mag":4.49,"ja":"はくちょう座θ星","en":"","color":"F"},{"id":878,"ra":30.25,"dec":7054.0,"mag":4.49,"ja":"カシオペヤ座48番星","en":"","color":"A"},{"id":879,"ra":318.5,"dec":1000.0,"mag":4.49,"ja":"こうま座δ星","en":"","color":"F"},{"id":880,"ra":68.25,"dec":-2945.0,"mag":4.49,"ja":"エリダヌス座υ1星","en":"","color":"K"},{"id":881,"ra":100.75,"dec":1313.0,"mag":4.49,"ja":"ふたご座30番星","en":"","color":"K"},{"id":882,"ra":151.75,"dec":3514.0,"mag":4.49,"ja":"こじし座21番星","en":"","color":"A"},{"id":883,"ra":355.5,"dec":146.0,"mag":4.49,"ja":"うお座λ星","en":"","color":"A"},{"id":884,"ra":151.75,"dec":-22.0,"mag":4.49,"ja":"ろくぶんぎ座α星","en":"","color":"A"},{"id":885,"ra":359.75,"dec":-6534.0,"mag":4.49,"ja":"きょしちょう座ε星","en":"","color":"B"},{"id":886,"ra":108.0,"dec":-4645.0,"mag":4.49,"ja":"とも座I星","en":"","color":"F"},{"id":887,"ra":118.0,"dec":-3851.0,"mag":4.49,"ja":"とも座b星","en":"","color":"B"},{"id":888,"ra":336.75,"dec":-6457.0,"mag":4.495,"ja":"きょしちょう座δ星","en":"","color":"B"}];
+window.CONST_LINES=[[298.75,624.0,297.5,852.0],[297.5,852.0,296.5,1036.0],[297.5,852.0,291.25,306.0],[291.25,306.0,298.0,100.0],[302.75,-49.0,298.0,100.0],[291.25,306.0,286.25,1351.0],[286.25,1351.0,284.75,1504.0],[291.25,306.0,286.5,-452.0],[2.0,2905.0,9.75,3051.0],[9.75,3051.0,17.25,3537.0],[30.749999999999996,4219.0,17.25,3537.0],[17.25,3537.0,14.0,3829.0],[14.0,3829.0,12.25,4104.0],[353.0,-3749.0,14.5,-2921.0],[14.5,-2921.0,349.5,-3231.0],[349.5,-3231.0,353.0,-3749.0],[271.5,-5005.0,262.75,-4952.0],[262.75,-4952.0,254.49999999999997,-5559.0],[254.49999999999997,-5559.0,252.25,-5902.0],[252.25,-5902.0,262.75,-6041.0],[262.75,-6041.0,261.25,-5622.0],[261.25,-5622.0,261.25,-5531.0],[261.25,-5531.0,271.5,-5005.0],[238.25,-1643.0,233.75,-1447.0],[233.75,-1447.0,229.25,-922.0],[222.5,-1602.0,226.0,-2516.0],[226.0,-2516.0,233.75,-1447.0],[33.0,850.0,37.0,827.0],[26.0,-1556.0,10.75,-1759.0],[10.75,-1759.0,4.75,-849.0],[10.75,-1759.0,17.0,-1010.0],[17.0,-1010.0,21.0,-810.0],[21.0,-810.0,27.75,-1020.0],[27.75,-1020.0,36.25,-1217.0],[36.25,-1217.0,39.75,-1152.0],[39.75,-1152.0,41.0,-1351.0],[41.0,-1351.0,38.0,-1514.0],[38.0,-1514.0,26.0,-1556.0],[34.75,-258.0,39.75,-1152.0],[34.75,-258.0,39.75,19.0],[39.75,19.0,40.75,314.0],[40.75,314.0,45.5,405.0],[45.5,405.0,44.75,854.0],[44.75,854.0,41.0,1006.0],[41.0,1006.0,37.0,827.0],[37.0,827.0,38.75,535.0],[38.75,535.0,40.75,314.0],[42.25,2715.0,31.75,2327.0],[31.75,2327.0,28.5,2048.0],[28.5,2048.0,28.25,1917.0],[281.75,-444.0,281.75,-542.0],[281.75,-542.0,283.5,-1536.0],[283.5,-1536.0,277.25,-1433.0],[277.25,-1433.0,278.75,-814.0],[278.75,-814.0,281.75,-444.0],[130.0,-3518.0,130.75,-3311.0],[130.75,-3311.0,132.5,-2742.0],[220.25,1343.0,213.75,1910.0],[213.75,1910.0,221.0,2704.0],[221.0,2704.0,228.75,3318.0],[228.75,3318.0,225.25,4023.0],[225.25,4023.0,218.0,3818.0],[218.0,3818.0,217.75,3022.0],[217.75,3022.0,213.75,1910.0],[213.75,1910.0,208.5,1823.0],[208.5,1823.0,207.25,1547.0],[67.5,-4457.0,70.0,-4151.0],[70.0,-4151.0,70.5,-3708.0],[124.50000000000001,-7655.0,158.75,-7836.0],[158.75,-7836.0,184.5,-7918.0],[131.5,2845.0,130.75,2128.0],[130.75,2128.0,125.00000000000001,2713.0],[130.75,2128.0,131.0,1809.0],[131.0,1809.0,124.00000000000001,911.0],[131.0,1809.0,134.5,1151.0],[304.5,-1232.0,305.25,-1446.0],[305.25,-1446.0,316.25,-1713.0],[316.25,-1713.0,320.5,-1650.0],[320.5,-1650.0,325.0,-1639.0],[325.0,-1639.0,326.75,-1607.0],[320.5,-1650.0,321.5,-2224.0],[321.5,-2224.0,316.25,-1713.0],[305.25,-1446.0,311.5,-2516.0],[316.25,-1713.0,312.75,-2655.0],[138.25,-6943.0,153.25,-7002.0],[153.25,-7002.0,160.5,-6423.0],[160.5,-6423.0,160.75,-6033.0],[160.75,-6033.0,167.0,-5858.0],[167.0,-5858.0,163.25,-5851.0],[163.25,-5851.0,156.75,-5844.0],[156.75,-5844.0,154.25,-6119.0],[154.25,-6119.0,139.25,-5916.0],[130.0,-5945.0,125.5,-5930.0],[125.5,-5930.0,95.75,-5241.0],[137.5,-5858.0,139.25,-5916.0],[137.5,-5858.0,130.0,-5945.0],[95.75,-5241.0,99.25,-4311.0],[125.5,-5930.0,120.75000000000001,-4000.0],[28.5,6340.0,21.25,6014.0],[21.25,6014.0,14.0,6043.0],[14.0,6043.0,10.0,5632.0],[10.0,5632.0,2.25,5908.0],[219.75,-6050.0,210.75,-6022.0],[210.75,-6022.0,204.75,-5327.0],[204.75,-5327.0,208.75,-4717.0],[208.75,-4717.0,209.5,-4448.0],[209.5,-4448.0,207.25,-4228.0],[207.25,-4228.0,207.25,-4141.0],[207.25,-4141.0,202.75,-3924.0],[202.75,-3924.0,200.0,-3642.0],[207.25,-4141.0,211.5,-3622.0],[207.25,-4228.0,218.75,-4209.0],[218.75,-4209.0,224.75,-4206.0],[208.75,-4717.0,190.25,-4857.0],[190.25,-4857.0,187.0,-5013.0],[187.0,-5013.0,182.0,-5043.0],[182.0,-5043.0,170.25,-5429.0],[173.5,-5415.0,173.75,-6301.0],[332.5,5812.0,342.25,6612.0],[342.25,6612.0,322.0,7033.0],[322.0,7033.0,319.5,6235.0],[319.5,6235.0,332.5,5812.0],[342.25,6612.0,354.75,7737.0],[354.75,7737.0,322.0,7033.0],[197.25,1731.0,197.75,2752.0],[197.75,2752.0,186.5,2816.0],[188.25,4121.0,194.0,3819.0],[89.75,3712.0,89.75,4456.0],[89.75,4456.0,79.0,4559.0],[79.0,4559.0,75.5,4104.0],[75.5,4104.0,74.0,3309.0],[81.5,2836.0,74.0,3309.0],[81.5,2836.0,89.75,3712.0],[95.5,-3326.0,94.0,-3508.0],[94.0,-3508.0,89.25,-3516.0],[89.25,-3516.0,87.5,-3546.0],[87.5,-3546.0,89.75,-4248.0],[87.5,-3546.0,84.75,-3404.0],[84.75,-3404.0,82.75,-3528.0],[220.5,-6458.0,230.75,-5919.0],[220.5,-6458.0,229.25,-5848.0],[164.75,-1817.0,167.75,-2249.0],[167.75,-2249.0,171.0,-1741.0],[171.0,-1741.0,169.75,-1446.0],[169.75,-1446.0,164.75,-1817.0],[169.75,-1446.0,171.0,-1051.0],[171.0,-1051.0,174.0,-948.0],[174.0,-948.0,179.0,-1709.0],[179.0,-1709.0,176.0,-1821.0],[176.0,-1821.0,171.0,-1741.0],[280.75,-3819.0,284.0,-3720.0],[284.0,-3720.0,284.5,-3706.0],[284.5,-3706.0,286.5,-3703.0],[286.5,-3703.0,287.25,-3754.0],[287.25,-3754.0,287.5,-3920.0],[287.5,-3920.0,287.0,-4029.0],[287.0,-4029.0,285.75,-4205.0],[285.75,-4205.0,284.0,-4242.0],[280.75,-3819.0,278.0,-3942.0],[233.0,3121.0,231.75,2906.0],[231.75,2906.0,233.5,2642.0],[233.5,2642.0,235.5,2617.0],[235.5,2617.0,237.25,2604.0],[237.25,2604.0,239.25,2652.0],[239.25,2652.0,240.25,2951.0],[188.0,-1611.0,187.25,-1630.0],[187.25,-1630.0,183.75,-1732.0],[183.75,-1732.0,182.5,-2237.0],[182.5,-2237.0,182.0,-2443.0],[182.5,-2237.0,188.5,-2323.0],[188.5,-2323.0,187.25,-1630.0],[187.75,-5706.0,186.5,-6305.0],[191.75,-5941.0,183.75,-5844.0],[289.25,5322.0,292.25,5143.0],[292.25,5143.0,296.0,4507.0],[296.0,4507.0,305.5,4015.0],[305.5,4015.0,310.25,4516.0],[305.5,4015.0,311.5,3358.0],[311.5,3358.0,318.0,3013.0],[318.0,3013.0,326.0,2844.0],[305.5,4015.0,299.0,3505.0],[299.0,3505.0,292.5,2757.0],[308.25,1118.0,309.25,1435.0],[309.25,1435.0,309.75,1554.0],[309.75,1554.0,311.5,1607.0],[311.5,1607.0,310.75,1504.0],[310.75,1504.0,309.25,1435.0],[86.0,-6544.0,88.5,-6305.0],[88.5,-6305.0,83.25,-6229.0],[83.25,-6229.0,86.0,-6544.0],[83.25,-6229.0,68.25,-5502.0],[68.25,-5502.0,64.0,-5129.0],[268.25,5652.0,269.0,5129.0],[269.0,5129.0,262.5,5218.0],[262.5,5218.0,263.0,5510.0],[263.0,5510.0,268.25,5652.0],[268.25,5652.0,288.0,6739.0],[288.0,6739.0,297.0,7016.0],[297.0,7016.0,288.75,7321.0],[288.75,7321.0,275.25,7243.0],[275.25,7243.0,257.0,6542.0],[257.0,6542.0,245.75,6130.0],[245.75,6130.0,240.25,5833.0],[240.25,5833.0,231.0,5857.0],[231.0,5857.0,211.0,6422.0],[211.0,6422.0,188.25,6947.0],[188.25,6947.0,172.75,6919.0],[243.24999999999997,-5437.0,244.75,-5009.0],[244.75,-5009.0,246.75,-4733.0],[246.75,-4733.0,240.75,-4913.0],[240.75,-4913.0,244.75,-5009.0],[240.75,-4913.0,243.24999999999997,-5437.0],[24.25,-5714.0,28.749999999999996,-5136.0],[28.749999999999996,-5136.0,34.0,-5130.0],[34.0,-5130.0,36.5,-4742.0],[36.5,-4742.0,39.75,-4253.0],[39.75,-4253.0,40.0,-3951.0],[40.0,-3951.0,44.5,-4018.0],[44.5,-4018.0,49.75,-4304.0],[49.75,-4304.0,57.0,-3737.0],[57.0,-3737.0,57.25,-3612.0],[57.25,-3612.0,64.25,-3347.0],[64.25,-3347.0,66.0,-3401.0],[66.0,-3401.0,68.75,-3033.0],[68.75,-3033.0,56.5,-2314.0],[56.5,-2314.0,53.25,-2137.0],[53.25,-2137.0,49.75,-2145.0],[49.75,-2145.0,45.5,-2337.0],[45.5,-2337.0,41.25,-1834.0],[41.25,-1834.0,44.0,-853.0],[44.0,-853.0,48.75,-849.0],[48.75,-849.0,53.0,-927.0],[53.0,-927.0,55.75,-945.0],[55.75,-945.0,69.0,-321.0],[69.0,-321.0,71.25,-315.0],[71.25,-315.0,73.0,-527.0],[73.0,-527.0,76.75,-505.0],[76.75,-505.0,77.25,-845.0],[77.25,-845.0,69.5,-1418.0],[295.25,1728.0,296.75,1832.0],[296.75,1832.0,295.0,1800.0],[296.75,1832.0,299.75,1929.0],[299.5,1929.0,301.25,1959.0],[42.25,-3224.0,48.0,-2859.0],[99.25,1623.0,106.0,2034.0],[106.0,2034.0,110.0,2158.0],[110.0,2158.0,109.5,1632.0],[109.5,1632.0,101.25,1253.0],[110.0,2158.0,113.75,2653.0],[113.75,2653.0,116.0,2423.0],[113.75,2653.0,116.25,2801.0],[113.75,2653.0,111.25,2747.0],[111.25,2747.0,107.75,3014.0],[107.75,3014.0,113.5,3153.0],[107.75,3014.0,103.0,3357.0],[107.75,3014.0,100.75,2507.0],[100.75,2507.0,97.0,2012.0],[100.75,2507.0,95.5,2230.0],[95.5,2230.0,93.5,2230.0],[93.5,2230.0,91.0,2315.0],[52.25,5956.0,59.25,6304.0],[59.25,6304.0,73.5,6620.0],[52.25,5956.0,57.5,7119.0],[57.5,7119.0,73.5,6620.0],[57.5,7119.0,80.5,7913.0],[103.5,-1202.0,105.75,-1537.0],[105.75,-1537.0,104.0,-1703.0],[104.0,-1703.0,101.25,-1642.0],[101.25,-1642.0,105.75,-2349.0],[105.75,-2349.0,107.0,-2623.0],[107.0,-2623.0,108.5,-2646.0],[108.5,-2646.0,111.0,-2918.0],[104.5,-2858.0,105.25,-2756.0],[105.25,-2756.0,107.0,-2623.0],[105.25,-2756.0,103.5,-2355.0],[103.5,-2355.0,99.0,-1915.0],[99.0,-1915.0,98.75,-2257.0],[99.0,-1915.0,95.5,-1757.0],[99.0,-1915.0,101.25,-1642.0],[104.5,-2858.0,102.25,-3230.0],[95.0,-3003.0,104.5,-2858.0],[104.0,-1703.0,103.5,-1202.0],[206.75,4918.0,200.75,5455.0],[200.75,5455.0,193.5,5557.0],[193.5,5557.0,183.75,5701.0],[183.75,5701.0,165.75,6145.0],[165.75,6145.0,165.25,5622.0],[165.25,5622.0,178.25,5341.0],[178.25,5341.0,183.75,5701.0],[178.25,5341.0,176.5,4746.0],[176.5,4746.0,167.25,4429.0],[167.25,4429.0,154.25,4254.0],[167.25,4429.0,155.5,4129.0],[165.25,5622.0,148.0,5403.0],[148.0,5403.0,143.0,5140.0],[143.0,5140.0,135.75,4709.0],[143.0,5140.0,134.75,4802.0],[148.0,5403.0,147.5,5902.0],[147.5,5902.0,127.5,6043.0],[127.5,6043.0,142.75,6303.0],[142.75,6303.0,165.75,6145.0],[346.5,-4331.0,337.25,-4329.0],[337.25,-4329.0,332.0,-4657.0],[332.0,-4657.0,340.5,-4653.0],[340.5,-4653.0,347.5,-4514.0],[347.5,-4514.0,346.5,-4331.0],[340.5,-4653.0,345.0,-5245.0],[340.5,-4653.0,342.0,-5119.0],[332.0,-4657.0,331.5,-3932.0],[331.5,-3932.0,328.25,-3721.0],[264.75,4600.0,269.0,3715.0],[269.0,3715.0,260.75,3708.0],[260.75,3708.0,259.25,3717.0],[259.25,3717.0,258.75,3648.0],[258.75,3648.0,250.5,3855.0],[250.5,3855.0,248.5,4226.0],[248.5,4226.0,244.75,4618.0],[244.75,4618.0,238.0,4227.0],[250.5,3855.0,250.25,3136.0],[250.25,3136.0,247.5,2129.0],[247.5,2129.0,245.25000000000003,1909.0],[250.25,3136.0,255.0,3055.0],[255.0,3055.0,262.5,2606.0],[262.5,2606.0,258.75,2450.0],[266.5,2743.0,269.25,2914.0],[269.25,2914.0,271.75,2845.0],[255.0,3055.0,258.75,3648.0],[266.5,2743.0,262.5,2606.0],[63.5,-4217.0,40.0,-5432.0],[40.0,-5432.0,45.75,-5944.0],[130.75,323.0,129.5,320.0],[129.5,320.0,129.25,542.0],[129.25,542.0,131.5,625.0],[131.5,625.0,132.0,550.0],[132.0,550.0,130.75,323.0],[132.0,550.0,133.75,556.0],[133.75,556.0,138.5,218.0],[138.5,218.0,142.75,-111.0],[142.75,-111.0,142.25,-246.0],[142.25,-246.0,141.75,-839.0],[141.75,-839.0,147.75,-1450.0],[147.75,-1450.0,152.5,-1221.0],[152.5,-1221.0,156.5,-1650.0],[156.5,-1650.0,162.25,-1611.0],[162.25,-1611.0,173.25,-3151.0],[173.25,-3151.0,178.0,-3354.0],[178.0,-3354.0,197.25,-2307.0],[197.25,-2307.0,199.5,-2310.0],[6.25,-7715.0,56.75,-7414.0],[56.75,-7414.0,39.75,-6816.0],[39.75,-6816.0,35.25,-6839.0],[35.25,-6839.0,29.5,-6134.0],[319.75,-5326.0,309.25,-4717.0],[309.25,-4717.0,313.5,-5827.0],[313.5,-5827.0,319.75,-5326.0],[333.75,3744.0,337.5,4307.0],[337.5,4307.0,337.25,4742.0],[337.25,4742.0,336.0,4928.0],[336.0,4928.0,335.75,5213.0],[335.75,5213.0,337.75,5016.0],[337.75,5016.0,337.25,4742.0],[93.5,-616.0,97.0,-701.0],[97.0,-701.0,107.75,-29.0],[107.75,-29.0,95.75,435.0],[95.75,435.0,92.0,229.0],[107.75,-29.0,122.0,-259.0],[122.0,-259.0,115.25,-933.0],[91.5,-1456.0,89.0,-1410.0],[89.0,-1410.0,86.5,-1449.0],[86.5,-1449.0,83.0,-1749.0],[83.0,-1749.0,78.0,-1612.0],[83.0,-1749.0,87.75,-2052.0],[87.75,-2052.0,86.0,-2226.0],[86.0,-2226.0,82.0,-2045.0],[82.0,-2045.0,76.25,-2222.0],[83.0,-1749.0,82.0,-2045.0],[78.0,-1612.0,79.75,-1310.0],[78.0,-1612.0,78.25,-1256.0],[76.25,-2222.0,78.0,-1612.0],[78.25,-1256.0,78.0,-1152.0],[79.75,-1310.0,79.75,-1218.0],[177.25,1434.0,168.5,1525.0],[168.5,1525.0,152.0,1158.0],[152.0,1158.0,151.75,1645.0],[151.75,1645.0,154.75,1950.0],[154.75,1950.0,168.5,2031.0],[168.5,2031.0,177.25,1434.0],[154.75,1950.0,154.0,2325.0],[154.0,2325.0,148.0,2600.0],[148.0,2600.0,146.25,2346.0],[168.5,2031.0,168.5,1525.0],[237.5,-3337.0,241.75,-3645.0],[241.75,-3645.0,240.0,-3823.0],[240.0,-3823.0,237.5,-3337.0],[240.0,-3823.0,233.75,-4110.0],[233.75,-4110.0,230.25,-4038.0],[230.25,-4038.0,230.25,-3615.0],[230.25,-4038.0,224.5,-4308.0],[233.75,-4110.0,234.5,-4234.0],[234.5,-4234.0,228.0,-5205.0],[228.0,-5205.0,220.25,-4723.0],[228.0,-5205.0,219.25,-4925.0],[220.25,-4723.0,216.5,-4522.0],[220.25,-4723.0,224.5,-4308.0],[140.25,3423.0,139.5,3648.0],[139.5,3648.0,136.5,3827.0],[136.5,3827.0,135.0,4146.0],[135.0,4146.0,125.5,4311.0],[125.5,4311.0,111.5,4912.0],[111.5,4912.0,104.25,5825.0],[104.25,5825.0,94.75,5900.0],[279.0,3847.0,281.0,3736.0],[281.0,3736.0,282.5,3321.0],[282.5,3321.0,284.5,3241.0],[284.5,3241.0,283.5,3653.0],[283.5,3653.0,281.0,3736.0],[156.75,-3104.0,149.5,-3553.0],[319.25,-3210.0,315.25,-3215.0],[315.25,-3215.0,312.25,-3346.0],[191.5,-6806.0,176.25,-6643.0],[176.25,-6643.0,188.0,-7207.0],[188.0,-7207.0,189.25,-6908.0],[189.25,-6908.0,191.5,-6806.0],[325.25,-7723.0,341.5,-8122.0],[341.5,-8122.0,216.5,-8340.0],[216.5,-8340.0,325.25,-7723.0],[221.75,-7902.0,248.25,-7853.0],[248.25,-7853.0,250.74999999999997,-7731.0],[263.5,1233.0,265.75,434.0],[257.5,-1543.0,265.75,434.0],[263.5,1233.0,254.25,922.0],[254.25,922.0,244.5,-441.0],[244.5,-441.0,249.25,-1034.0],[249.25,-1034.0,257.5,-1543.0],[257.5,-1543.0,262.75,-2357.0],[85.0,-156.0,84.0,-112.0],[84.0,-112.0,83.0,-17.0],[90.75,1941.0,92.75,1412.0],[92.75,1412.0,91.75,1446.0],[91.75,1446.0,88.5,2016.0],[92.75,1412.0,90.5,938.0],[90.5,938.0,88.75,724.0],[88.75,724.0,85.0,-156.0],[85.0,-156.0,86.75,-940.0],[86.75,-940.0,78.5,-812.0],[78.5,-812.0,83.0,-17.0],[83.0,-17.0,81.25,620.0],[81.25,620.0,83.75,956.0],[83.75,956.0,88.75,724.0],[81.25,620.0,72.25,657.0],[72.25,657.0,72.75,536.0],[72.75,536.0,73.25,230.0],[73.25,230.0,74.5,142.0],[72.25,657.0,72.5,854.0],[72.5,854.0,73.5,1009.0],[91.75,1446.0,90.5,938.0],[306.25,-5644.0,321.5,-6521.0],[321.5,-6521.0,311.0,-6612.0],[311.0,-6612.0,302.0,-6610.0],[302.0,-6610.0,306.25,-5644.0],[302.0,-6610.0,300.0,-7254.0],[300.0,-7254.0,280.75,-7125.0],[280.75,-7125.0,284.0,-6714.0],[284.0,-6714.0,302.0,-6610.0],[284.0,-6714.0,283.0,-6211.0],[283.0,-6211.0,275.75,-6129.0],[275.75,-6129.0,272.0,-6340.0],[272.0,-6340.0,283.0,-6211.0],[272.0,-6340.0,266.25,-6443.0],[3.25,1511.0,346.0,1512.0],[345.75,2804.0,340.75,3013.0],[340.75,3013.0,332.25,3310.0],[345.75,2804.0,342.5,2436.0],[342.5,2436.0,341.5,2333.0],[341.5,2333.0,331.75,2520.0],[331.75,2520.0,326.0,2538.0],[346.0,1512.0,341.5,1210.0],[341.5,1210.0,340.25,1049.0],[340.25,1049.0,332.5,611.0],[332.5,611.0,326.0,952.0],[2.0,2905.0,345.75,2804.0],[2.0,2905.0,3.25,1511.0],[345.75,2804.0,346.0,1512.0],[102.0,-6156.0,87.25,-5609.0],[87.25,-5609.0,86.75,-5103.0],[56.0,3217.0,58.5,3153.0],[58.5,3153.0,59.5,3547.0],[59.5,3547.0,59.25,4000.0],[59.25,4000.0,55.5,4747.0],[55.5,4747.0,51.0,4951.0],[51.0,4951.0,46.0,5330.0],[46.0,5330.0,42.5,5553.0],[51.0,4951.0,47.0,4057.0],[47.0,4057.0,46.25,3850.0],[46.25,3850.0,42.5,3819.0],[317.5,1007.0,318.5,1000.0],[318.5,1000.0,320.5,648.0],[320.5,648.0,318.75,514.0],[318.75,514.0,317.5,1007.0],[114.75,513.0,111.75,817.0],[163.25,3412.0,156.75,3642.0],[156.75,3642.0,151.75,3514.0],[151.75,3514.0,143.5,3623.0],[151.75,3514.0,163.25,3412.0],[292.0,2439.0,300.25,2745.0],[37.75,8915.0,263.0,8635.0],[263.0,8635.0,251.25,8202.0],[251.25,8202.0,236.0,7747.0],[236.0,7747.0,244.25000000000003,7545.0],[244.25000000000003,7545.0,230.0,7150.0],[230.0,7150.0,222.5,7409.0],[222.5,7409.0,236.0,7747.0],[17.0,-5514.0,16.5,-4643.0],[16.5,-4643.0,6.5,-4340.0],[6.5,-4340.0,17.0,-5514.0],[16.5,-4643.0,22.75,-4904.0],[22.75,-4904.0,28.25,-4618.0],[28.25,-4618.0,16.5,-4643.0],[16.5,-4643.0,22.0,-4319.0],[22.0,-4319.0,6.5,-4340.0],[6.5,-4340.0,6.5,-4218.0],[6.5,-4218.0,2.25,-4544.0],[2.25,-4544.0,6.5,-4340.0],[15.500000000000002,3148.0,18.25,2435.0],[15.500000000000002,3148.0,19.75,2715.0],[19.75,2715.0,18.25,2435.0],[18.25,2435.0,22.75,1520.0],[22.75,1520.0,26.25,909.0],[26.25,909.0,30.5,245.0],[30.5,245.0,28.25,311.0],[28.25,311.0,25.25,529.0],[25.25,529.0,22.5,608.0],[22.5,608.0,15.500000000000002,753.0],[15.500000000000002,753.0,12.0,717.0],[12.0,717.0,5.0,811.0],[5.0,811.0,359.75,651.0],[359.75,651.0,354.75,537.0],[354.75,537.0,355.5,146.0],[355.5,146.0,351.5,115.0],[351.5,115.0,349.25,316.0],[349.25,316.0,351.75,622.0],[351.75,622.0,354.75,537.0],[344.25,-2937.0,340.0,-2702.0],[340.0,-2702.0,330.0,-2827.0],[330.0,-2827.0,326.75,-3053.0],[326.75,-3053.0,332.5,-3232.0],[332.5,-3232.0,337.75,-3220.0],[337.75,-3220.0,343.75,-3232.0],[115.25,-7236.0,107.0,-7029.0],[107.0,-7029.0,121.75,-6837.0],[121.75,-6837.0,115.25,-7236.0],[121.75,-6837.0,109.0,-6757.0],[121.75,-6837.0,126.24999999999999,-6608.0],[126.24999999999999,-6608.0,135.5,-6623.0],[135.5,-6623.0,121.75,-6837.0],[121.75,-2418.0,117.25,-2454.0],[117.25,-2454.0,109.25,-3705.0],[109.25,-3705.0,99.25,-4311.0],[99.25,-4311.0,102.25,-5036.0],[102.25,-5036.0,112.25,-4318.0],[112.25,-4318.0,120.75000000000001,-4000.0],[120.75000000000001,-4000.0,121.75,-2418.0],[63.5,-6228.0,64.0,-5918.0],[64.0,-5918.0,59.5,-6124.0],[59.5,-6124.0,56.0,-6448.0],[56.0,-6448.0,63.5,-6228.0],[275.0,-2949.0,276.75,-2525.0],[274.25,-3645.0,276.0,-3423.0],[276.0,-3423.0,271.25,-3025.0],[271.25,-3025.0,266.75,-2749.0],[271.25,-3025.0,275.0,-2949.0],[275.0,-2949.0,276.0,-3423.0],[276.0,-3423.0,285.5,-2952.0],[285.5,-2952.0,281.25,-2659.0],[281.25,-2659.0,275.0,-2949.0],[281.25,-2659.0,276.75,-2525.0],[276.75,-2525.0,273.25,-2103.0],[285.5,-2952.0,286.5,-2740.0],[286.5,-2740.0,283.75,-2617.0],[283.75,-2617.0,281.25,-2659.0],[283.75,-2617.0,284.25,-2106.0],[284.25,-2106.0,286.0,-2144.0],[286.0,-2144.0,290.25,-1750.0],[286.5,-2740.0,294.0,-2443.0],[294.0,-2443.0,300.5,-2742.0],[300.5,-2742.0,299.75,-3516.0],[299.75,-3516.0,298.75,-4152.0],[298.75,-4152.0,290.75,-4036.0],[298.75,-4152.0,290.75,-4447.0],[263.25,-3706.0,265.5,-3901.0],[265.5,-3901.0,266.75,-4007.0],[266.75,-4007.0,264.25,-4259.0],[264.25,-4259.0,258.0,-4314.0],[258.0,-4314.0,253.25,-4221.0],[253.25,-4221.0,252.75000000000003,-3802.0],[252.75000000000003,-3802.0,252.49999999999997,-3417.0],[252.49999999999997,-3417.0,248.74999999999997,-2812.0],[248.74999999999997,-2812.0,247.25,-2625.0],[247.25,-2625.0,240.0,-2237.0],[247.25,-2625.0,239.5,-2606.0],[247.25,-2625.0,241.24999999999997,-1948.0],[237.25,-325.0,237.5,428.0],[237.5,428.0,236.0,625.0],[236.0,625.0,233.5,1032.0],[233.5,1032.0,236.5,1525.0],[236.5,1525.0,239.0,1539.0],[239.0,1539.0,237.0,1808.0],[237.0,1808.0,236.5,1525.0],[284.0,412.0,275.25,-253.0],[275.25,-253.0,265.25,-1252.0],[265.25,-1252.0,264.25,-1523.0],[264.25,-1523.0,260.0,-1250.0],[157.5,-38.0,151.75,-22.0],[82.75,-7620.0,70.75,-7055.0],[81.5,2836.0,70.5,2257.0],[70.5,2257.0,67.0,1910.0],[68.75,1630.0,84.25,2108.0],[64.75,1537.0,65.5,1732.0],[64.75,1537.0,60.0,1229.0],[60.0,1229.0,51.0,901.0],[68.75,1630.0,67.0,1910.0],[68.75,1630.0,67.0,1552.0],[67.0,1552.0,64.75,1537.0],[67.0,1910.0,66.25,1755.0],[66.25,1755.0,65.5,1732.0],[65.5,1732.0,57.25,2403.0],[277.0,-4904.0,276.5,-4558.0],[334.5,-6015.0,349.25,-5814.0],[349.25,-5814.0,5.0,-6452.0],[349.25,-5814.0,7.750000000000001,-6257.0],[33.75,3321.0,32.25,3459.0],[32.25,3459.0,28.25,2934.0],[28.25,2934.0,33.75,3321.0],[252.0,-6901.0,229.5,-6840.0],[229.5,-6840.0,238.75,-6325.0],[238.75,-6325.0,252.0,-6901.0],[322.75,-534.0,331.25,-19.0],[331.25,-19.0,335.25,-123.0],[335.25,-123.0,337.0,-1.0],[337.0,-1.0,338.75,-7.0],[338.75,-7.0,343.0,-734.0],[343.0,-734.0,348.75,-905.0],[348.75,-905.0,350.5,-2006.0],[331.25,-19.0,334.0,-746.0],[334.0,-746.0,331.5,-1352.0],[334.0,-746.0,337.5,-1040.0],[337.5,-1040.0,342.25,-1335.0],[342.25,-1335.0,343.5,-1549.0],[343.5,-1549.0,347.25,-2110.0],[311.75,-929.0,322.75,-534.0],[176.25,631.0,184.5,-47.0],[184.5,-47.0,190.25,-126.0],[190.25,-126.0,201.25,-1109.0],[201.25,-1109.0,213.0,-1016.0],[213.0,-1016.0,214.0,-600.0],[214.0,-600.0,220.75,-539.0],[201.25,-1109.0,203.5,-35.0],[203.5,-35.0,210.25,132.0],[210.25,132.0,221.5,153.0],[203.5,-35.0,193.75,323.0],[193.75,323.0,195.5,1057.0],[193.75,323.0,190.25,-126.0],[122.25,-4720.0,130.0,-5255.0],[130.0,-5255.0,131.0,-5442.0],[131.0,-5442.0,140.5,-5500.0],[140.5,-5500.0,149.0,-5434.0],[149.0,-5434.0,161.5,-4925.0],[161.5,-4925.0,159.25,-4813.0],[159.25,-4813.0,153.5,-4207.0],[153.5,-4207.0,142.5,-4028.0],[142.5,-4028.0,136.75,-4325.0],[136.75,-4325.0,122.25,-4720.0]];
+</script>
+<script>
+/* Gyro sky renderer: full 3-D rear-camera attitude, zenith-safe projection, Safari canvas reset. */
+(() => {
+"use strict";
+
+const canvas = document.getElementById("gyroSky");
+const ctx = canvas.getContext("2d", {alpha:false});
+const info = document.getElementById("gyroInfo");
+const status = document.getElementById("gyroStatus");
+const startBtn = {textContent:""};
+
+let W=0,H=0,DPR=1;
+let lat=35.0, lon=135.0;
+let heading=180, pitch=25;
+// Full rear-camera orientation in the local Earth frame.
+// x=east, y=north, z=up.
+let cameraBasis=null;
+let yawCorrection=null;
+let sensorActive=false;
+let enabled=false;
+let dirty=true;
+let lastDraw=0;
+const FOV_X=80, FOV_Y=105;
+
+// Accept several possible data.js formats and normalize them.
+function findArray(candidates) {
+  for (const n of candidates) if (Array.isArray(window[n])) return window[n];
+  return null;
+}
+function globalArrays() {
+  const out={};
+  for (const k of Object.keys(window)) {
+    try { if (Array.isArray(window[k]) && window[k].length>100) out[k]=window[k]; } catch(_){}
+  }
+  return out;
+}
+const globals=globalArrays();
+
+function decDDMMToDeg(v){
+  const x=Number(v)||0;
+  const sign=x<0?-1:1;
+  const a=Math.abs(x);
+  // Scratch catalog ALWAYS stores declination as DDMM:
+  //  8915 = +89°15', 624 = +6°24', -49 = -0°49'.
+  // The old code wrongly treated values below 100 as whole degrees.
+  const d=Math.floor(a/100);
+  const m=a-d*100;
+  return sign*(d+m/60);
+}
+
+function parseStars(){
+  // Preferred formats.
+  for (const key of ["STARS","stars","starData","STAR_DATA"]) {
+    const a=window[key];
+    if(Array.isArray(a) && a.length && typeof a[0]==="object") {
+      return a.map((s,i)=>({
+        ra: +((s.raDeg ?? s.ra ?? s.RA) || 0),
+        dec: decDDMMToDeg((s.dec ?? s.Dec ?? s.DEC) || 0),
+        mag:+((s.mag ?? s.magnitude ?? 5) || 5),
+        ja:String(s.ja ?? s.nameJa ?? ""),
+        en:String(s.en ?? s.nameEn ?? s.name ?? ""),
+        name:String(s.en ?? s.nameEn ?? s.name ?? s.ja ?? s.nameJa ?? "")
+      }));
+    }
+  }
+
+  // Arrays extracted from Scratch data.js.
+  const keys=Object.keys(globals);
+  const raKey=keys.find(k=>/stars?.*ra/i.test(k));
+  const decKey=keys.find(k=>/stars?.*dec/i.test(k));
+  const magKey=keys.find(k=>/stars?.*(mag|magnitude)/i.test(k));
+  const nameKey=keys.find(k=>/stars?.*name/i.test(k));
+  if(raKey && decKey){
+    const R=globals[raKey], D=globals[decKey], M=magKey?globals[magKey]:[], N=nameKey?globals[nameKey]:[];
+    return R.map((v,i)=>{
+      let x=+v||0;
+      // Scratch catalog stores RA in HHMM form in the original project.
+      if(x<=2400){
+        const iv=Math.round(x), hh=Math.floor(iv/100), mm=iv%100;
+        x=(hh+mm/60)*15;
+      }
+      return {ra:x,dec:+D[i]||0,mag:+M[i]||5,name:String(N[i]||"")};
+    });
+  }
+
+  // Last-resort: look for one large array of objects.
+  for(const a of Object.values(globals)){
+    if(Array.isArray(a)&&a.length>500&&a[0]&&typeof a[0]==="object"){
+      return a.map((s)=>({ra:+s.ra||0,dec:+s.dec||0,mag:+s.mag||5,name:String(s.name||"")}));
+    }
+  }
+  return [];
+}
+
+function parseLines(){
+  if(Array.isArray(window.CONST_LINES)){
+    return window.CONST_LINES.map(q=>({
+      ra1:+q[0]||0, dec1:decDDMMToDeg(q[1]),
+      ra2:+q[2]||0, dec2:decDDMMToDeg(q[3])
+    }));
+  }
+  for(const key of ["CONSTELLATIONS","constellationLines","LINES","lines"]){
+    const a=window[key];
+    if(Array.isArray(a)&&a.length&&typeof a[0]==="object"){
+      return a.map(q=>({
+        ra1:+(q.ra1??q.startRA??0), dec1:decDDMMToDeg(q.dec1??q.startDec??0),
+        ra2:+(q.ra2??q.endRA??0), dec2:decDDMMToDeg(q.dec2??q.endDec??0)
+      }));
+    }
+  }
+  const keys=Object.keys(globals);
+  const sra=keys.find(k=>/(line|constellation).*(start|begin).*ra/i.test(k));
+  const sdec=keys.find(k=>/(line|constellation).*(start|begin).*dec/i.test(k));
+  const era=keys.find(k=>/(line|constellation).*(end).*ra/i.test(k));
+  const edec=keys.find(k=>/(line|constellation).*(end).*dec/i.test(k));
+  if(sra&&sdec&&era&&edec){
+    return globals[sra].map((v,i)=>({ra1:toRADeg(v),dec1:+globals[sdec][i]||0,ra2:toRADeg(globals[era][i]),dec2:+globals[edec][i]||0}));
+  }
+  return [];
+}
+function toRADeg(v){
+  let x=+v||0;
+  if(x<=2400){const n=Math.round(x),h=Math.floor(n/100),m=n%100;return(h+m/60)*15;}
+  return x;
+}
+
+const stars=parseStars();
+const lines=parseLines();
+
+function isPolaris(s){
+  return (s.en||"").includes("ポラリス") ||
+         (s.ja||"").includes("こぐま座α星") ||
+         (Math.abs(s.ra-37.75)<0.3 && Math.abs(s.dec-89.25)<0.3);
+}
+const BIG_DIPPER_NAMES=["ドゥベー","メラク","フェクダ","メグレズ","アリオト","ミザール","アルカイド"];
+function isBigDipper(s){ return BIG_DIPPER_NAMES.some(n=>(s.en||"").includes(n)); }
+
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=Math.max(1,Math.round(window.innerWidth));
+  H=Math.max(1,Math.round(window.innerHeight));
+
+  const bw=Math.max(1,Math.round(W*DPR));
+  const bh=Math.max(1,Math.round(H*DPR));
+  if(canvas.width!==bw || canvas.height!==bh){
+    canvas.width=bw;
+    canvas.height=bh;
+  }
+  canvas.style.width=W+"px";
+  canvas.style.height=H+"px";
+
+  // Safari: always restore a known transform after backing-store resize.
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  dirty=true;
+}
+addEventListener("resize",resize,{passive:true}); resize();
+
+if(window.visualViewport){
+  window.visualViewport.addEventListener("resize",()=>{ resize(); },{passive:true});
+}
+window.addEventListener("pageshow",()=>{
+  // Safari may restore the page from the back/forward cache with old compositor
+  // contents. Force a fresh backing store and a single clean redraw.
+  resize();
+  dirty=true;
+},{passive:true});
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden){
+    resize();
+    dirty=true;
+  }
+});
+
+function norm360(x){x%=360;return x<0?x+360:x;}
+function jd(date){return 2440587.5+date.getTime()/86400000;}
+function gst(date){
+  const J=jd(date), T=(J-2451545)/36525;
+  return norm360(280.46061837+360.98564736629*(J-2451545)+0.000387933*T*T-T*T*T/38710000);
+}
+function horizontal(ra,dec,date){
+  const lst=norm360(gst(date)+lon), Hh=(lst-ra)*Math.PI/180;
+  const de=dec*Math.PI/180, la=lat*Math.PI/180;
+  const sa=Math.sin(de)*Math.sin(la)+Math.cos(de)*Math.cos(la)*Math.cos(Hh);
+  const alt=Math.asin(Math.max(-1,Math.min(1,sa)));
+  const y=Math.sin(Hh);
+  const x=Math.cos(Hh)*Math.sin(la)-Math.tan(de)*Math.cos(la);
+  let az=Math.atan2(y,x)+Math.PI;
+  return {az:norm360(az*180/Math.PI),alt:alt*180/Math.PI};
+}
+function skyVec(az,alt){
+  const A=az*Math.PI/180, h=alt*Math.PI/180;
+  const ch=Math.cos(h);
+  return {x:ch*Math.sin(A), y:ch*Math.cos(A), z:Math.sin(h)};
+}
+function dot3(a,b){return a.x*b.x+a.y*b.y+a.z*b.z;}
+
+// Perspective projection on the rear-camera tangent plane.
+// v14 uses the full 3-D camera basis, including roll and upside-down poses.
+// Earth frame: x=east, y=north, z=up.
+// This remains well-behaved at the zenith; unlike azimuth/elevation subtraction,
+// there is no singularity when altitude approaches +90°.
+function projectRaw(az,alt){
+  let forward,right,up;
+
+  if(cameraBasis){
+    ({forward,right,up}=cameraBasis);
+  }else{
+    // Fallback before sensor data arrives.
+    const A=heading*Math.PI/180, h=pitch*Math.PI/180;
+    const ca=Math.cos(A), sa=Math.sin(A), ch=Math.cos(h), sh=Math.sin(h);
+    forward={x:ch*sa, y:ch*ca, z:sh};
+    right={x:ca, y:-sa, z:0};
+    up={x:-sh*sa, y:-sh*ca, z:ch};
+  }
+
+  const t=skyVec(az,alt);
+  const cx=dot3(t,right);
+  const cy=dot3(t,up);
+  const cz=dot3(t,forward);
+
+  if(cz<=1e-5) return {x:NaN,y:NaN,front:false,cz};
+  const tx=Math.tan((FOV_X/2)*Math.PI/180);
+  const ty=Math.tan((FOV_Y/2)*Math.PI/180);
+  return {
+    x:W/2+(cx/cz)/tx*(W/2),
+    y:H/2-(cy/cz)/ty*(H/2),
+    front:true,cz
+  };
+}
+function project(az,alt){
+  const p=projectRaw(az,alt);
+  if(!p.front || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+  if(p.x < -40 || p.x > W+40 || p.y < -40 || p.y > H+40) return null;
+  return p;
+}
+
+// ---------------------------------------------------------------------------
+// Moon + planets
+// Ported from the user's original Scratch project ("Today's Starry sky remix").
+// The orbital elements and perturbation terms below intentionally follow that
+// project rather than replacing it with a different ephemeris model.
+// Epoch variable d = days since 2000 Jan 0.0 (JD 2451543.5).
+// ---------------------------------------------------------------------------
+function sind(x){return Math.sin(x*Math.PI/180);}
+function cosd(x){return Math.cos(x*Math.PI/180);}
+function atan2d(y,x){return Math.atan2(y,x)*180/Math.PI;}
+
+function keplerDeg(M,e){
+  M=norm360(M);
+  let E=M+(180/Math.PI)*e*sind(M)*(1+e*cosd(M));
+  for(let k=0;k<12;k++){
+    const n=E-(E-(180/Math.PI)*e*sind(E)-M)/(1-e*cosd(E));
+    if(Math.abs(n-E)<1e-8){E=n;break;}
+    E=n;
+  }
+  return E;
+}
+
+function scratchSunBase(date){
+  const d=jd(date)-2451543.5;
+  const loncorr=-0.0000382394*d;
+  const ecl=23.4393-3.563e-7*d;
+  const w=282.9404+0.0000470935*d;
+  const e=0.01671022-1.151e-9*d;
+  const M=356.047+0.9856002585*d;
+  const E=keplerDeg(M,e);
+  const xv=cosd(E)-e;
+  const yv=Math.sqrt(1-e*e)*sind(E);
+  const v=atan2d(yv,xv);
+  const rs=Math.hypot(xv,yv);
+  const lonsun=v+w+loncorr;
+  return {d,loncorr,ecl,w,M,rs,xs:rs*cosd(lonsun),ys:rs*sind(lonsun)};
+}
+
+function scratchElements(name,d){
+  switch(name){
+    case "Mercury": return {N:48.33167+3.24587e-5*d,i:7.00487+5e-8*d,w:29.1241+1.01444e-5*d,a:.38709893,e:.20563069+5.59e-10*d,M:168.6562+4.0923344368*d};
+    case "Venus":   return {N:76.752+2.4659e-5*d,i:3.39471+2.75e-8*d,w:54.9238+1.38374e-5*d,a:.72333199,e:.00677323+1.302e-9*d,M:48.0052+1.6021302244*d};
+    case "Mars":    return {N:49.57854+2.11081e-5*d,i:1.85061+1.78e-8*d,w:286.5016+2.92961e-5*d,a:1.52366232844,e:.09341233+2.516e-9*d,M:18.6021+.5240207766*d};
+    case "Jupiter": return {N:100.4542+2.76854e-5*d,i:1.3028+1.557e-7*d,w:273.8777+1.64505e-5*d,a:5.20336289787,e:.04851+4.469e-9*d,M:19.895+.0830853001*d};
+    case "Saturn":  return {N:113.6634+2.3898e-5*d,i:2.4886+1.081e-7*d,w:339.3939+2.97661e-5*d,a:9.537070235853,e:.05552+9.499e-9*d,M:316.967+.0334442282*d};
+    case "Uranus":  return {N:74.0005+1.3978e-5*d,i:.7733+1.9e-8*d,w:96.6612+3.0565e-5*d,a:19.20120912523+1.55e-8*d,e:.04638+7.45e-9*d,M:142.5905+.011725806*d};
+    case "Neptune": return {N:131.7806+3.0173e-5*d,i:1.76917+2.55e-7*d,w:272.8461+6.027e-6*d,a:30.06896340805+3.313e-8*d,e:.0097+2.15e-9*d,M:260.2471+.005995147*d};
+  }
+}
+
+function scratchPlanetEq(name,date){
+  const sun=scratchSunBase(date), d=sun.d;
+  const o=scratchElements(name,d);
+  const E=keplerDeg(o.M,o.e);
+  const xv=o.a*(cosd(E)-o.e);
+  const yv=o.a*Math.sqrt(1-o.e*o.e)*sind(E);
+  const v=atan2d(yv,xv), r=Math.hypot(xv,yv);
+
+  let xh=r*(cosd(o.N)*cosd(v+o.w)-sind(o.N)*sind(v+o.w)*cosd(o.i));
+  let yh=r*(sind(o.N)*cosd(v+o.w)+cosd(o.N)*sind(v+o.w)*cosd(o.i));
+  let zh=r*(sind(v+o.w)*sind(o.i));
+
+  let lonecl=atan2d(yh,xh)+sun.loncorr;
+  let latecl=atan2d(zh,Math.hypot(xh,yh));
+
+  // Original Scratch perturbations.
+  // Important: the original project recomputes xh/yh/zh from corrected
+  // longitude/latitude only for Jupiter, Saturn and Uranus.
+  const Mj=scratchElements("Jupiter",d).M;
+  const Ms=scratchElements("Saturn",d).M;
+  let corrected=false;
+
+  if(name==="Jupiter"){
+    lonecl += -0.332*sind(2*o.M-5*Ms-67.6)
+              -0.056*sind(2*o.M-2*Ms+21)
+              +0.042*sind(3*o.M-5*Ms+21)
+              -0.036*sind(o.M-2*Ms)
+              +0.022*cosd(o.M-Ms)
+              +0.023*sind(2*o.M-3*Ms+52)
+              -0.016*sind(o.M-5*Ms-69);
+    corrected=true;
+  }else if(name==="Saturn"){
+    lonecl += 0.812*sind(2*Mj-5*o.M-67.6)
+              -0.229*cosd(2*Mj-4*o.M-2)
+              +0.119*sind(Mj-2*o.M-3)
+              +0.046*sind(2*Mj-6*o.M-69)
+              +0.014*sind(Mj-3*o.M+32);
+    latecl += -0.020*cosd(2*Mj-4*o.M-2)
+              +0.018*sind(2*Mj-6*o.M-49);
+    corrected=true;
+  }else if(name==="Uranus"){
+    lonecl += 0.040*sind(Ms-2*o.M+6)
+              +0.035*sind(Ms-3*o.M+33)
+              -0.015*sind(Mj-o.M+20);
+    corrected=true;
+  }
+
+  if(corrected){
+    xh=r*cosd(lonecl)*cosd(latecl);
+    yh=r*sind(lonecl)*cosd(latecl);
+    zh=r*sind(latecl);
+  }
+
+  const xe=xh+sun.xs;
+  const ye=(yh+sun.ys)*cosd(sun.ecl)-zh*sind(sun.ecl);
+  const ze=(yh+sun.ys)*sind(sun.ecl)+zh*cosd(sun.ecl);
+  return {ra:norm360(atan2d(ye,xe)),dec:atan2d(ze,Math.hypot(xe,ye))};
+}
+
+function scratchMoonEq(date){
+  const sun=scratchSunBase(date), d=sun.d;
+  const N=125.1228-0.0529538083*d;
+  const i=5.1454;
+  const w=318.0634+0.1643573223*d;
+  const a=60.2666;
+  const e=0.0549;
+  const M=115.3654+13.0649929509*d;
+  const E=keplerDeg(M,e);
+  const xv=a*(cosd(E)-e);
+  const yv=a*Math.sqrt(1-e*e)*sind(E);
+  const v=atan2d(yv,xv);
+  let r=Math.hypot(xv,yv);
+
+  let xh=r*(cosd(N)*cosd(v+w)-sind(N)*sind(v+w)*cosd(i));
+  let yh=r*(sind(N)*cosd(v+w)+cosd(N)*sind(v+w)*cosd(i));
+  let zh=r*sind(v+w)*sind(i);
+
+  let lonecl=atan2d(yh,xh)+sun.loncorr;
+  let latecl=atan2d(zh,Math.hypot(xh,yh));
+  const L=M+w+N;
+  const D=L-(sun.M+sun.w);
+  const F=L-N;
+
+  // Lunar perturbations from the original Scratch project.
+  lonecl += -1.274*sind(M-2*D)
+            +0.658*sind(2*D)
+            -0.186*sind(sun.M)
+            -0.059*sind(2*M-2*D)
+            -0.057*sind(M-2*D+sun.M)
+            +0.053*sind(M+2*D)
+            +0.046*sind(2*D-sun.M)
+            +0.041*sind(M-sun.M)
+            -0.035*sind(D)
+            -0.031*sind(M+sun.M)
+            -0.015*sind(2*F-2*D)
+            +0.011*sind(M-4*D);
+  latecl += -0.173*sind(F-2*D)
+             -0.055*sind(M-F-2*D)
+             -0.046*sind(M+F-2*D)
+             +0.033*sind(F+2*D)
+             +0.017*sind(2*M+F);
+  r += -0.58*cosd(M-2*D)-0.46*cosd(2*D);
+
+  xh=r*cosd(lonecl)*cosd(latecl);
+  yh=r*sind(lonecl)*cosd(latecl);
+  zh=r*sind(latecl);
+
+  const xe=xh;
+  const ye=yh*cosd(sun.ecl)-zh*sind(sun.ecl);
+  const ze=yh*sind(sun.ecl)+zh*cosd(sun.ecl);
+  return {ra:norm360(atan2d(ye,xe)),dec:atan2d(ze,Math.hypot(xe,ye))};
+}
+
+const SKY_BODIES=[
+  {key:"Moon",name:"月",symbol:"☾",radius:7,eq:scratchMoonEq},
+  {key:"Mercury",name:"水星",symbol:"☿",radius:4},
+  {key:"Venus",name:"金星",symbol:"♀",radius:6},
+  {key:"Mars",name:"火星",symbol:"♂",radius:5},
+  {key:"Jupiter",name:"木星",symbol:"♃",radius:6},
+  {key:"Saturn",name:"土星",symbol:"♄",radius:5},
+  {key:"Uranus",name:"天王星",symbol:"♅",radius:4},
+  {key:"Neptune",name:"海王星",symbol:"♆",radius:4}
+];
+
+function bodyEquatorial(body,date){
+  return body.eq ? body.eq(date) : scratchPlanetEq(body.key,date);
+}
+
+function verifyAstronomy(now){
+  const pol=stars.find(isPolaris);
+  const dip=stars.filter(isBigDipper);
+  if(!pol || dip.length<7) return {ok:false,msg:"基準星データ不足"};
+  const ph=horizontal(pol.ra,pol.dec,now);
+  const dh=dip.map(s=>({name:s.en,...horizontal(s.ra,s.dec,now)}));
+  // Polaris altitude should remain close to observer latitude.
+  const polOK=Math.abs(ph.alt-lat)<1.5;
+  // This is a data/geometry invariant, not an assumption that the Dipper
+  // must always be above horizon at every date.
+  return {ok:polOK,pol:ph,dip:dh};
+}
+
+function beginFrame(){
+  // Hard-reset the Canvas before every frame.
+  // clearRect must run in backing-store pixel coordinates, not in the DPR
+  // transformed CSS coordinate system. This prevents Safari from retaining
+  // old pixels / compositor tiles while the phone is moving.
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation="copy";
+  ctx.fillStyle="#02050b";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.restore();
+
+  // All sky drawing below uses CSS-pixel coordinates.
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation="source-over";
+}
+
+function draw(){
+  if(!enabled) return;
+  dirty=false;
+  const now=new Date();
+  beginFrame();
+
+  // Constellation lines. Nothing below astronomical altitude 0° is allowed
+  // to appear. Segments crossing the horizon are clipped exactly at alt=0.
+  ctx.strokeStyle="rgba(112,146,202,.45)";
+  ctx.lineWidth=.75;
+  ctx.beginPath();
+  for(const q of lines){
+    let h1=horizontal(q.ra1,q.dec1,now);
+    let h2=horizontal(q.ra2,q.dec2,now);
+
+    if(h1.alt<0 && h2.alt<0) continue;
+
+    // unwrap azimuth across 0/360 for interpolation
+    let az1=h1.az, az2=h2.az;
+    let d=((az2-az1+540)%360)-180;
+    az2=az1+d;
+
+    // If one endpoint is underground, interpolate the crossing at altitude 0.
+    if(h1.alt<0 || h2.alt<0){
+      const t=(0-h1.alt)/(h2.alt-h1.alt);
+      const azCross=norm360(az1+(az2-az1)*t);
+      if(h1.alt<0) h1={az:azCross,alt:0};
+      else h2={az:azCross,alt:0};
+    }
+
+    const a=project(h1.az,h1.alt);
+    const b=project(h2.az,h2.alt);
+    if(a&&b){ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);}
+  }
+  ctx.stroke();
+
+  // stars
+  for(const s of stars){
+    if(s.mag>5.2) continue;
+    const h=horizontal(s.ra,s.dec,now);
+    // Physical visibility invariant: stars below the horizon are never drawn.
+    if(h.alt < 0) continue;
+    const p=project(h.az,h.alt);
+    if(!p) continue;
+    const r=Math.max(.65,Math.min(3.0,2.5-.32*s.mag));
+    ctx.beginPath();ctx.arc(p.x,p.y,r,0,Math.PI*2);
+    ctx.fillStyle=s.mag<1.2?"#fffdf4":"#e8eefb";ctx.fill();
+
+    // Mark Polaris so north-sky alignment can be verified directly.
+    if(isPolaris(s)){
+      ctx.save();
+      ctx.strokeStyle="rgba(255,255,255,.9)";
+      ctx.lineWidth=1;
+      ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle="#ffffff";
+      ctx.font="13px -apple-system,BlinkMacSystemFont,sans-serif";
+      ctx.fillText(`北極星  方位${Math.round(h.az)}° 高度${Math.round(h.alt)}°`,p.x+10,p.y-8);
+      ctx.restore();
+    }
+    else if(isBigDipper(s)){
+      ctx.save();
+      ctx.fillStyle="rgba(220,230,245,.72)";
+      ctx.font="10px -apple-system,BlinkMacSystemFont,sans-serif";
+      ctx.fillText(s.en,p.x+5,p.y-5);
+      ctx.restore();
+    }
+  }
+
+
+  // Moon + planets from the original Scratch orbital model.
+  // Same physical horizon rule as the stars: altitude below 0° is never drawn.
+  for(const body of SKY_BODIES){
+    const eq=bodyEquatorial(body,now);
+    const h=horizontal(eq.ra,eq.dec,now);
+    if(h.alt<0) continue;
+    const p=project(h.az,h.alt);
+    if(!p) continue;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,body.radius,0,Math.PI*2);
+    ctx.fillStyle=body.key==="Moon" ? "#e8e5d8" :
+                  body.key==="Mars" ? "#e7a07d" :
+                  body.key==="Venus" ? "#fff1c2" :
+                  "#d9e2f0";
+    ctx.fill();
+
+    // A thin ring keeps planets distinguishable from catalog stars.
+    ctx.strokeStyle="rgba(255,255,255,.65)";
+    ctx.lineWidth=1;
+    ctx.stroke();
+
+    ctx.fillStyle="#ffffff";
+    ctx.font="12px -apple-system,BlinkMacSystemFont,sans-serif";
+    ctx.fillText(`${body.symbol} ${body.name}`,p.x+body.radius+5,p.y+4);
+    ctx.restore();
+  }
+
+  // North celestial pole reference (Dec +90°): altitude equals observer latitude.
+  const ncp=horizontal(0,90,now);
+  const np=project(ncp.az,ncp.alt);
+  if(np){
+    ctx.save();
+    ctx.strokeStyle="rgba(255,210,120,.75)";
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(np.x-6,np.y);ctx.lineTo(np.x+6,np.y);
+    ctx.moveTo(np.x,np.y-6);ctx.lineTo(np.x,np.y+6);
+    ctx.stroke();
+    ctx.fillStyle="rgba(255,220,150,.9)";
+    ctx.font="11px -apple-system,BlinkMacSystemFont,sans-serif";
+    ctx.fillText("天の北極",np.x+8,np.y+4);
+    ctx.restore();
+  }
+
+  // True astronomical horizon: altitude = 0°.  Under perspective projection
+  // it is generally curved / off-screen, so sample it on the celestial sphere.
+  ctx.save();
+  ctx.strokeStyle="rgba(190,200,215,.32)";
+  ctx.lineWidth=1;
+  ctx.beginPath();
+  let pen=false, labelPoint=null;
+  for(let az=0;az<=360;az+=2){
+    const hp=project(az,0);
+    if(hp){
+      if(!pen){ctx.moveTo(hp.x,hp.y);pen=true;}
+      else ctx.lineTo(hp.x,hp.y);
+      if(!labelPoint && hp.x>12 && hp.x<W-120 && hp.y>18 && hp.y<H-18) labelPoint=hp;
+    }else pen=false;
+  }
+  ctx.stroke();
+  if(labelPoint){
+    ctx.fillStyle="rgba(220,225,235,.7)";
+    ctx.font="12px -apple-system,BlinkMacSystemFont,sans-serif";
+    ctx.fillText("地平線  高度0°",labelPoint.x,labelPoint.y-7);
+  }
+  ctx.restore();
+
+  {
+    const pol=stars.find(isPolaris);
+    const above=SKY_BODIES.map(body=>{
+      const eq=bodyEquatorial(body,now);
+      const h=horizontal(eq.ra,eq.dec,now);
+      return {name:body.name,az:h.az,alt:h.alt};
+    }).filter(b=>b.alt>=0);
+    const bodyText=above.length
+      ? above.map(b=>`${b.name}${Math.round(b.alt)}°`).join(" ")
+      : "月・惑星なし";
+    if(pol){
+      const ph=horizontal(pol.ra,pol.dec,now);
+      info.textContent=`視線 ${Math.round(heading)}°/${Math.round(pitch)}°　地上: ${bodyText}`;
+    }else{
+      info.textContent=`方位 ${Math.round(heading)}° 高度 ${Math.round(pitch)}°　地上: ${bodyText}`;
+    }
+  }
+}
+function loop(t){
+  // Max ~20 FPS while moving; almost no work when still.
+  if(enabled && dirty && t-lastDraw>45){lastDraw=t;draw();}
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Refresh only because real sky slowly changes.
+setInterval(()=>{dirty=true;},30000);
+
+function deg2rad(d){ return d*Math.PI/180; }
+function rad2deg(r){ return r*180/Math.PI; }
+
+// Rotate a vector by W3C DeviceOrientation angles.
+// Earth frame used here: X=east, Y=north, Z=up.
+// Device +Z points out through the SCREEN (toward the user),
+// therefore the REAR camera looks along device -Z.
+function deviceVectorToEarth(vx,vy,vz,alpha,beta,gamma){
+  const a=deg2rad(alpha||0), b=deg2rad(beta||0), g=deg2rad(gamma||0);
+
+  // Ry(gamma)
+  let x1 =  Math.cos(g)*vx + Math.sin(g)*vz;
+  let y1 =  vy;
+  let z1 = -Math.sin(g)*vx + Math.cos(g)*vz;
+
+  // Rx(beta)
+  let x2 = x1;
+  let y2 = Math.cos(b)*y1 - Math.sin(b)*z1;
+  let z2 = Math.sin(b)*y1 + Math.cos(b)*z1;
+
+  // Rz(alpha)
+  let x3 = Math.cos(a)*x2 - Math.sin(a)*y2;
+  let y3 = Math.sin(a)*x2 + Math.cos(a)*y2;
+  let z3 = z2;
+
+  return {x:x3,y:y3,z:z3};
+}
+
+function azimuthOf(v){
+  // X=east, Y=north -> 0=N, 90=E.
+  return norm360(rad2deg(Math.atan2(v.x,v.y)));
+}
+
+function rotateAroundUp(v,deg){
+  const a=deg2rad(deg), c=Math.cos(a), s=Math.sin(a);
+  // positive angle rotates north toward east in our azimuth convention
+  return {x:c*v.x+s*v.y, y:-s*v.x+c*v.y, z:v.z};
+}
+
+let smoothHeading=null;
+let smoothPitch=null;
+let smoothForward=null, smoothRight=null, smoothUp=null;
+
+function smoothAngle(prev,next,factor=0.22){
+  if(prev===null) return next;
+  let d=((next-prev+540)%360)-180;
+  return norm360(prev+d*factor);
+}
+function vlen(v){return Math.hypot(v.x,v.y,v.z);}
+function vnorm(v){
+  const n=vlen(v)||1;
+  return {x:v.x/n,y:v.y/n,z:v.z/n};
+}
+function vcross(a,b){
+  return {x:a.y*b.z-a.z*b.y,y:a.z*b.x-a.x*b.z,z:a.x*b.y-a.y*b.x};
+}
+function vscaleAdd(a,b,f){
+  return {x:a.x+(b.x-a.x)*f,y:a.y+(b.y-a.y)*f,z:a.z+(b.z-a.z)*f};
+}
+function rotateBasisYaw(v,deg){
+  return rotateAroundUp(v,deg);
+}
+
+function setOrientation(e){
+  if(!enabled) return;
+  if(typeof e.alpha!=="number" || typeof e.beta!=="number" || typeof e.gamma!=="number") return;
+
+  // Build the COMPLETE device attitude first.
+  // Device axes in portrait:
+  //   +X = screen right
+  //   +Y = screen top
+  //   +Z = out through display toward the user
+  // Rear camera therefore looks along -Z.
+  let rawForward=deviceVectorToEarth(0,0,-1,e.alpha,e.beta,e.gamma);
+  let rawRight  =deviceVectorToEarth(1,0, 0,e.alpha,e.beta,e.gamma);
+  let rawUp     =deviceVectorToEarth(0,1, 0,e.alpha,e.beta,e.gamma);
+
+  // Convert device portrait axes to the CURRENT screen axes.
+  // Rear-camera forward (-Z) is unchanged by screen rotation, but screen-right
+  // and screen-up rotate when the user turns the iPhone landscape/upside-down.
+  const screenAngle = (window.screen && screen.orientation && Number.isFinite(screen.orientation.angle))
+    ? screen.orientation.angle
+    : (typeof window.orientation === "number" ? window.orientation : 0);
+  if(screenAngle){
+    const th=deg2rad(screenAngle), c=Math.cos(th), s=Math.sin(th);
+    const r0=rawRight, u0=rawUp;
+    rawRight={x:c*r0.x-s*u0.x, y:c*r0.y-s*u0.y, z:c*r0.z-s*u0.z};
+    rawUp={x:s*r0.x+c*u0.x, y:s*r0.y+c*u0.y, z:s*r0.z+c*u0.z};
+  }
+
+  // iOS alpha is not guaranteed to use magnetic north as zero.
+  // webkitCompassHeading has already proved accurate on this iPhone, so use it
+  // only to rotate the WHOLE 3-D attitude around Earth's vertical axis.
+  //
+  // When the camera approaches the zenith its azimuth becomes undefined.
+  // Do NOT recompute the yaw correction there; keep the last reliable value.
+  const horiz=Math.hypot(rawForward.x,rawForward.y);
+  if(typeof e.webkitCompassHeading==="number" && horiz>0.28){
+    const rawAz=azimuthOf(rawForward);
+    const wanted=norm360(e.webkitCompassHeading);
+    const corr=((wanted-rawAz+540)%360)-180;
+    if(yawCorrection===null) yawCorrection=corr;
+    else{
+      let d=((corr-yawCorrection+540)%360)-180;
+      yawCorrection+=d*0.16;
+    }
+  }
+  if(yawCorrection===null) yawCorrection=0;
+
+  rawForward=rotateBasisYaw(rawForward,yawCorrection);
+  rawRight=rotateBasisYaw(rawRight,yawCorrection);
+  rawUp=rotateBasisYaw(rawUp,yawCorrection);
+
+  // Smooth vectors, then re-orthonormalize.  This preserves a physically valid
+  // camera frame even while beta wraps from +180° to -180° beyond the zenith.
+  const f=0.28;
+  smoothForward=smoothForward ? vnorm(vscaleAdd(smoothForward,rawForward,f)) : vnorm(rawForward);
+  smoothRight=smoothRight ? vnorm(vscaleAdd(smoothRight,rawRight,f)) : vnorm(rawRight);
+
+  // Gram-Schmidt using the measured forward and right vectors.
+  const proj=dot3(smoothRight,smoothForward);
+  smoothRight=vnorm({
+    x:smoothRight.x-proj*smoothForward.x,
+    y:smoothRight.y-proj*smoothForward.y,
+    z:smoothRight.z-proj*smoothForward.z
+  });
+  smoothUp=vnorm(vcross(smoothForward,smoothRight));
+
+  // Ensure screen-up follows the actual device +Y direction, including when
+  // the phone is upside-down beyond the zenith.
+  if(dot3(smoothUp,rawUp)<0){
+    smoothRight={x:-smoothRight.x,y:-smoothRight.y,z:-smoothRight.z};
+    smoothUp={x:-smoothUp.x,y:-smoothUp.y,z:-smoothUp.z};
+  }
+
+  cameraBasis={
+    forward:smoothForward,
+    right:smoothRight,
+    up:smoothUp
+  };
+
+  // heading/pitch are now diagnostics only; projection uses cameraBasis.
+  const fh=Math.hypot(smoothForward.x,smoothForward.y);
+  if(fh>1e-4) heading=azimuthOf(smoothForward);
+  pitch=rad2deg(Math.asin(Math.max(-1,Math.min(1,smoothForward.z))));
+
+  sensorActive=true;
+  dirty=true;
+
+  const pol=stars.find(isPolaris);
+  const pose=pitch>80 ? "天頂付近" : (pitch>8 ? "空" : (pitch<-8 ? "地面" : "水平"));
+  if(pol){
+    const ph=horizontal(pol.ra,pol.dec,new Date());
+    status.textContent=`方位 ${Math.round(heading)}° / 高度 ${Math.round(pitch)}° (${pose})　北極星 ${Math.round(ph.az)}° / ${Math.round(ph.alt)}°`;
+  }else{
+    status.textContent=`方位 ${Math.round(heading)}° / 高度 ${Math.round(pitch)}° (${pose})`;
+  }
+}
+
+async function startSensors(){
+  status.textContent="センサー許可を確認中…";
+  try{
+    enabled=true;
+    sensorActive=false; cameraBasis=null; yawCorrection=null;
+    smoothHeading=null; smoothPitch=null; smoothForward=null; smoothRight=null; smoothUp=null;
+    resize(); dirty=true;
+    if(typeof DeviceOrientationEvent!=="undefined" && typeof DeviceOrientationEvent.requestPermission==="function"){
+      const r=await DeviceOrientationEvent.requestPermission();
+      if(r!=="granted"){enabled=false;status.textContent="方向センサーが許可されませんでした";return false;}
+    }
+    window.removeEventListener("deviceorientation",setOrientation,true);
+    window.removeEventListener("deviceorientationabsolute",setOrientation,true);
+    window.addEventListener("deviceorientationabsolute",setOrientation,true);
+    window.addEventListener("deviceorientation",setOrientation,true);
+    startBtn.textContent="ジャイロON";
+    status.textContent="iPhoneを空へ向けてください";
+    setTimeout(()=>{if(enabled && !sensorActive)status.textContent="センサー値が届きません。Safariのモーション設定を確認してください";},1800);
+    return true;
+  }catch(err){enabled=false;status.textContent="センサー開始エラー: "+(err.message||err);return false;}
+}
+function stopSensors(){
+  enabled=false; sensorActive=false; cameraBasis=null;
+  window.removeEventListener("deviceorientation",setOrientation,true);
+  window.removeEventListener("deviceorientationabsolute",setOrientation,true);
+  status.textContent="ジャイロ停止中";
+}
+function setLocation(la,lo){
+  la=Number(la); lo=Number(lo);
+  if(Number.isFinite(la)&&Number.isFinite(lo)&&la>=-90&&la<=90&&lo>=-180&&lo<=180){
+    lat=la; lon=lo; dirty=true; return true;
+  }
+  return false;
+}
+window.GyroSky={start:startSensors,stop:stopSensors,setLocation,refresh:()=>{resize();dirty=true;},get active(){return enabled;}};
+})();
+
+</script>
+
 </body>
 </html>

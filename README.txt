@@ -1,10 +1,13 @@
-Today's Starry Sky v2
+Today's Starry Sky v3 - Gyro mode
 
-GitHub Pages用: index.html をリポジトリのルートへ配置してください。
+GitHub Pages: upload index.html as the site root.
 
-変更点:
-- スマホ/PCモード切替を常時表示
-- 起動時に現在地を自動取得
-- 緯度経度は「📍現在地」から任意変更可能
-- 前回地点を端末内(localStorage)へ保存
-- 天体計算・星座描画ロジックは元Scratch版を維持
+Changes:
+- Added UI gyro toggle button
+- Gyro mode follows rear-camera direction using full 3-D device attitude
+- Handles zenith crossing and upside-down poses without azimuth singularity
+- Corrects screen rotation for portrait/landscape
+- Uses iOS webkitCompassHeading yaw correction when available
+- Uses current observation latitude/longitude from the main app
+- Retains the Safari canvas ghosting fix from v15
+- Moon and planets are included in gyro view
