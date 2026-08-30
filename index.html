@@ -451,6 +451,47 @@ function toRADeg(v){
 const stars=parseStars();
 const lines=parseLines();
 
+// v7: constellation-name labels.  Build their stable celestial centres directly
+// from the same star catalog used for rendering, so labels follow the user's
+// original constellation data without changing any gyro/orientation math.
+function constellationNameOfStar(s){
+  let ja=String(s.ja||"");
+  const i=ja.indexOf("座");
+  if(i<0) return "";
+  let n=ja.slice(0,i+1);
+  // One source-catalog spelling variant refers to the same constellation.
+  if(n==="りゅこつ座") n="りゅうこつ座";
+  return n;
+}
+function buildConstellationCenters(catalog){
+  const groups=new Map();
+  for(const s of catalog){
+    const name=constellationNameOfStar(s);
+    if(!name) continue;
+    let g=groups.get(name);
+    if(!g){g={name,x:0,y:0,z:0,count:0};groups.set(name,g);}
+    const ra=deg2rad(s.ra), de=deg2rad(s.dec);
+    const cd=Math.cos(de);
+    // Equal weighting keeps the label near the geometric middle of each
+    // catalog constellation rather than pulling it toward one bright star.
+    g.x+=cd*Math.cos(ra); g.y+=cd*Math.sin(ra); g.z+=Math.sin(de); g.count++;
+  }
+  const out=[];
+  for(const g of groups.values()){
+    const r=Math.hypot(g.x,g.y,g.z);
+    if(!r || g.count<1) continue;
+    const x=g.x/r,y=g.y/r,z=g.z/r;
+    out.push({
+      name:g.name,
+      ra:norm360(rad2deg(Math.atan2(y,x))),
+      dec:rad2deg(Math.asin(Math.max(-1,Math.min(1,z)))),
+      count:g.count
+    });
+  }
+  return out;
+}
+const constellationCenters=buildConstellationCenters(stars);
+
 function isPolaris(s){
   return (s.en||"").includes("ポラリス") ||
          (s.ja||"").includes("こぐま座α星") ||
@@ -902,6 +943,57 @@ function draw(){
   }
   ctx.stroke();
 
+  // Constellation names (v7).  Draw these as a quiet background layer:
+  // individual stars and their proper-name labels are drawn afterwards and
+  // therefore remain visually dominant.  Only the nearest visible labels are
+  // shown to avoid turning a phone screen into a wall of text.
+  {
+    const candidates=[];
+    for(const c of constellationCenters){
+      const h=horizontal(c.ra,c.dec,now);
+      if(h.alt<0) continue;
+      const p=project(h.az,h.alt);
+      if(!p) continue;
+      const d2=(p.x-W/2)**2+(p.y-H/2)**2;
+      candidates.push({c,p,d2});
+    }
+    candidates.sort((a,b)=>a.d2-b.d2 || b.c.count-a.c.count);
+    const budget=W<H ? 8 : 12;
+    const used=[];
+    reserveDomRect(used,document.getElementById("toolbar"),6);
+    reserveDomRect(used,document.getElementById("info"),6);
+    reserveDomRect(used,document.getElementById("debug"),6);
+    ctx.save();
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.font="700 14px -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif";
+    let placed=0;
+    for(const q of candidates){
+      if(placed>=budget) break;
+      const label=q.c.name;
+      const tw=Math.ceil(ctx.measureText(label).width), th=18;
+      const trials=[[0,0],[0,-22],[0,22],[-tw*.35,0],[tw*.35,0]];
+      let chosen=null;
+      for(const [dx,dy] of trials){
+        const x=q.p.x+dx, y=q.p.y+dy;
+        const box={x:x-tw/2-5,y:y-th/2-3,w:tw+10,h:th+6};
+        if(box.x<5||box.y<5||box.x+box.w>W-5||box.y+box.h>H-5) continue;
+        if(used.some(o=>rectsOverlap(box,o,5))) continue;
+        chosen={x,y,box}; break;
+      }
+      if(!chosen) continue;
+      ctx.lineWidth=4;
+      ctx.lineJoin="round";
+      ctx.strokeStyle="rgba(2,5,11,.82)";
+      ctx.strokeText(label,chosen.x,chosen.y);
+      ctx.fillStyle="rgba(135,171,222,.68)";
+      ctx.fillText(label,chosen.x,chosen.y);
+      used.push(chosen.box);
+      placed++;
+    }
+    ctx.restore();
+  }
+
   // stars + named-star label candidates
   const starLabelCandidates=[];
   for(const s of stars){
@@ -1214,7 +1306,7 @@ function setOrientation(e){
 
   const roll=cameraRollDeg(cameraBasis);
   const rollText=roll===null?"天頂":`${Math.round(roll)}°`;
-  const srcText=raw.source==="locked"?"方位校正LOCK":raw.source==="absolute"?"絶対方位":"相対方位";
+  const srcText=raw.source==="locked"?"方位校正LOCK v7":raw.source==="absolute"?"絶対方位 v7":"相対方位 v7";
   status.textContent=`方位 ${Math.round(heading)}° / 高度 ${Math.round(pitch)}° / 傾き ${rollText}　${srcText}`;
 }
 
