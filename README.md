@@ -1,0 +1,56 @@
+# 今日の星空 — Starry Sky Atlas
+
+Scratchランタイムを使わず、HTML・CSS・JavaScriptだけで動く星空シミュレーターです。元プログラムの恒星カタログ（888件）、星座線（672本）、太陽・月・惑星の簡易軌道計算を引き継いでいます。
+
+再構築元: [7nk2zck68c-oss/starrysky-rebuild](https://github.com/7nk2zck68c-oss/starrysky-rebuild)
+
+## 主な機能
+
+- 観測地点と時刻に合わせた恒星・星座・太陽・月・惑星の表示
+- ドラッグ操作による手動の見回しと、スマートフォンの端末方向センサーを使うジャイロ表示
+- 恒星または惑星の点・名前をタップして、等級、スペクトル型、赤経・赤緯、方位・高度などを表示
+- `0〜1,000,000倍`の任意速度による未来の星空シミュレーション
+- 1倍、60倍、1時間/秒、1日/秒のプリセット、一時停止、現在時刻への復帰
+- 現在地取得または緯度・経度の手動設定
+- スマートフォン／PC向けのレスポンシブ表示
+
+## ローカルで確認
+
+ビルドや依存関係のインストールは不要です。ES Modulesを使うため、ファイルを直接開かずHTTPサーバーから配信してください。
+
+```bash
+python -m http.server 8000
+```
+
+その後、`http://localhost:8000/` を開きます。テストにはNode.js 20以降を使います。
+
+```bash
+npm test
+```
+
+## GitHub Pagesで公開
+
+1. このフォルダーの内容をGitHubリポジトリのルートへ配置し、`main`ブランチへpushします。
+2. GitHubの `Settings → Pages` を開きます。
+3. `Build and deployment` のSourceを `GitHub Actions` にします。
+4. 同梱の `.github/workflows/pages.yml` が自動で公開します。
+
+端末方向センサーと位置情報は、公開環境では原則としてHTTPSが必要です。GitHub PagesはHTTPSで配信されます。iPhone/iPadでは「ジャイロ」ボタンを押した後、表示されるセンサー利用許可を承認してください。
+
+## 構成
+
+- `index.html` — アプリ画面とメタデータ
+- `styles.css` — レスポンシブUI
+- `src/catalog-data.js` — Scratch版から分離した恒星・星座線データ
+- `src/astronomy.js` — 座標変換と太陽系天体の簡易軌道計算
+- `src/orientation.js` — 端末方向センサーと方位補正
+- `src/renderer.js` — Canvas天球描画、ラベル、タップ判定
+- `src/simulation.js` — 任意倍率の時刻進行
+
+## 精度について
+
+このアプリは教育・観察補助向けです。惑星と月は元プログラム由来の簡易軌道モデルで、歳差・章動・大気差・固有運動などの高精度補正は行っていません。航法や研究用途には使用しないでください。
+
+## ライセンス
+
+[MIT License](./LICENSE)
