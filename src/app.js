@@ -170,12 +170,52 @@ const renderer = new SkyRenderer(elements.sky, {
   },
 });
 
+let calibrationToastShown = false;
+
+function updateGyroStatus(source, calibration) {
+  const accuracy = Number.isFinite(calibration?.accuracy) ? `±${Math.round(calibration.accuracy)}°` : '';
+  let message = `ジャイロ追従中 · ${source}`;
+  let visualState = 'tracking';
+
+  if (calibration?.state === 'calibrating') {
+    const progress = Math.round((calibration.progress || 0) * 100);
+    message = calibration.calibrated
+      ? `端末を水平に保持 · 方位を再補正中 ${progress}%`
+      : `端末を水平に保持 · 方位補正中 ${progress}%`;
+    visualState = 'calibrating';
+  } else if (calibration?.calibrated) {
+    if (calibration.state === 'accuracy-poor') {
+      message = `方位補正済み · 精度低下${accuracy ? ` ${accuracy}` : ''}のため補正値を固定中`;
+      visualState = 'warning';
+    } else {
+      message = '方位補正済み · ジャイロ追従中';
+      visualState = 'ready';
+    }
+  } else if (calibration?.state === 'needs-flat') {
+    message = '端末を水平にして方位を補正';
+    visualState = 'needs-action';
+  } else if (calibration?.state === 'accuracy-poor') {
+    message = `コンパス精度不足${accuracy ? ` ${accuracy}` : ''} · 磁石や金属から離してください`;
+    visualState = 'warning';
+  } else if (calibration?.state === 'unavailable' && !calibration?.calibrated) {
+    message = `ジャイロ追従中 · ${source}`;
+  }
+
+  elements.sensorNote.textContent = message;
+  elements.sensorNote.dataset.state = visualState;
+  elements.sensorNote.hidden = false;
+
+  if (calibration?.justCalibrated && !calibrationToastShown) {
+    calibrationToastShown = true;
+    showToast('水平コンパス補正が完了しました。端末を空へ向けてください。');
+  }
+}
+
 const orientation = new DeviceOrientationController({
   initialHeading: () => renderer.getDirection().heading,
-  onUpdate: ({ basis, source }) => {
+  onUpdate: ({ basis, source, calibration }) => {
     renderer.setGyroBasis(basis);
-    elements.sensorNote.textContent = `ジャイロ追従中 · ${source}`;
-    elements.sensorNote.hidden = false;
+    updateGyroStatus(source, calibration);
   },
 });
 
@@ -255,6 +295,8 @@ async function toggleGyro() {
     elements.gyroMode.classList.remove('is-active');
     elements.gyroMode.setAttribute('aria-pressed', 'false');
     elements.sensorNote.hidden = true;
+    delete elements.sensorNote.dataset.state;
+    calibrationToastShown = false;
     elements.canvasHint.textContent = 'ドラッグで空を見回す · 天体名をタップして詳細';
     renderer.render(true);
     return;
@@ -262,20 +304,25 @@ async function toggleGyro() {
 
   elements.gyroMode.disabled = true;
   elements.sensorNote.textContent = '端末方向センサーを待っています…';
+  elements.sensorNote.dataset.state = 'calibrating';
   elements.sensorNote.hidden = false;
   const result = await orientation.start();
   elements.gyroMode.disabled = false;
   if (!result.ok) {
     renderer.clearGyro();
     elements.sensorNote.textContent = result.reason;
+    elements.sensorNote.dataset.state = 'warning';
     showToast(result.reason);
     return;
   }
   state.gyroActive = true;
+  calibrationToastShown = Boolean(result.calibration?.calibrated);
   elements.gyroMode.classList.add('is-active');
   elements.gyroMode.setAttribute('aria-pressed', 'true');
-  elements.canvasHint.textContent = '端末を空へ向ける · 星や惑星の名前をタップして詳細';
-  showToast(`ジャイロモードを開始しました（${result.source}）。`);
+  elements.canvasHint.textContent = '端末を水平にすると方位補正 · 空へ向けて天体名をタップ';
+  showToast(result.calibration?.calibrated
+    ? 'ジャイロモードを開始しました。'
+    : 'ジャイロを開始しました。端末を水平にすると方位を補正します。');
 }
 
 elements.smartMode.addEventListener('click', () => setDisplayMode('smart'));

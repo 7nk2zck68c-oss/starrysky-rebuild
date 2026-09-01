@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { basisFromDeviceOrientation } from '../src/orientation.js';
+import {
+  CompassCalibrator,
+  basisFromDeviceOrientation,
+  circularMeanDegrees,
+  compassCalibrationMeasurement,
+} from '../src/orientation.js';
 import { basisDirection } from '../src/renderer.js';
 
 const near = (actual, expected, tolerance = 1e-8) => {
@@ -55,4 +60,100 @@ test('全方位・全画面角度でカメラ基底を正規直交に保つ', ()
       near(dot(basis.up, basis.forward), 0);
     }
   }
+});
+
+test('コンパス補正は端末が水平に近い場合だけ許可する', () => {
+  const flat = compassCalibrationMeasurement({
+    alpha: 0, beta: 0, gamma: 0, compassHeading: 0, compassAccuracy: 5,
+  });
+  const upright = compassCalibrationMeasurement({
+    alpha: 0, beta: 90, gamma: 0, compassHeading: 218, compassAccuracy: 5,
+  });
+  assert.equal(flat.eligible, true);
+  near(flat.offset, 0);
+  assert.equal(upright.eligible, false);
+  assert.equal(upright.reason, 'needs-flat');
+});
+
+test('水平判定の15度境界を守る', () => {
+  const within = compassCalibrationMeasurement({
+    alpha: 0, beta: 14.9, gamma: 0, compassHeading: 0, compassAccuracy: 5,
+  });
+  const outside = compassCalibrationMeasurement({
+    alpha: 0, beta: 15.1, gamma: 0, compassHeading: 0, compassAccuracy: 5,
+  });
+  assert.equal(within.eligible, true);
+  assert.equal(outside.eligible, false);
+  assert.equal(outside.reason, 'needs-flat');
+});
+
+test('精度が悪いコンパス値は水平でも採用しない', () => {
+  for (const compassAccuracy of [-1, 21, 90]) {
+    const measurement = compassCalibrationMeasurement({
+      alpha: 0, beta: 0, gamma: 0, compassHeading: 0, compassAccuracy,
+    });
+    assert.equal(measurement.eligible, false);
+    assert.equal(measurement.reason, 'accuracy-poor');
+  }
+});
+
+test('端末上端のコンパス方位から水平回転差を求める', () => {
+  const measurement = compassCalibrationMeasurement({
+    alpha: 90, beta: 0, gamma: 0, compassHeading: 0, compassAccuracy: 4,
+  });
+  assert.equal(measurement.eligible, true);
+  near(measurement.rawTopHeading, 270);
+  near(measurement.offset, 90);
+});
+
+test('0度境界をまたぐコンパス値を円周平均できる', () => {
+  const mean = circularMeanDegrees([179, -179, 178, -178]);
+  assert.ok(Math.abs(Math.abs(mean) - 180) < 1e-8);
+});
+
+test('水平で安定した値だけを確定し、立てた後は補正値を固定する', () => {
+  const calibrator = new CompassCalibrator({ settleMilliseconds: 500, minimumSamples: 5 });
+  const horizontal = {
+    alpha: 90, beta: 0, gamma: 0, compassHeading: 0, compassAccuracy: 4,
+  };
+  let result;
+  for (const now of [0, 125, 250, 375, 500]) result = calibrator.observe(horizontal, now);
+  assert.equal(result.state, 'calibrated');
+  assert.equal(result.calibrated, true);
+  near(result.offset, 90);
+
+  for (let index = 0; index < 20; index += 1) {
+    result = calibrator.observe({
+      alpha: index * 10,
+      beta: 90,
+      gamma: 0,
+      compassHeading: index * 17,
+      compassAccuracy: 4,
+    }, 600 + index * 16);
+  }
+  assert.equal(result.state, 'needs-flat');
+  assert.equal(result.calibrated, true);
+  near(result.offset, 90);
+});
+
+test('急に飛んだコンパス値は、それ以前の平均から切り離す', () => {
+  const calibrator = new CompassCalibrator({
+    settleMilliseconds: 300,
+    minimumSamples: 3,
+    maxSampleDeviationDegrees: 5,
+  });
+  const sample = (compassHeading, now) => calibrator.observe({
+    alpha: 0, beta: 0, gamma: 0, compassHeading, compassAccuracy: 3,
+  }, now);
+
+  sample(0, 0);
+  sample(1, 100);
+  let result = sample(40, 200);
+  assert.equal(result.calibrated, false);
+  result = sample(41, 300);
+  result = sample(39, 400);
+  assert.equal(result.calibrated, false);
+  result = sample(40, 500);
+  assert.equal(result.state, 'calibrated');
+  near(result.offset, 40, 1);
 });

@@ -1,4 +1,12 @@
-import { degToRad, normalizeDegrees, radToDeg } from './astronomy.js';
+import { degToRad, normalizeDegrees, normalizeSignedDegrees, radToDeg } from './astronomy.js';
+
+export const COMPASS_CALIBRATION_DEFAULTS = Object.freeze({
+  maxTiltDegrees: 15,
+  maxAccuracyDegrees: 20,
+  settleMilliseconds: 500,
+  minimumSamples: 8,
+  maxSampleDeviationDegrees: 12,
+});
 
 function multiplyMatrixVector(matrix, vector) {
   return {
@@ -26,6 +34,10 @@ function rotateAroundZenith(vector, degrees) {
 
 function headingOf(vector) {
   return normalizeDegrees(radToDeg(Math.atan2(vector.x, vector.y)));
+}
+
+function angleDifference(first, second) {
+  return normalizeSignedDegrees(first - second);
 }
 
 function eulerMatrix(alpha, beta, gamma) {
@@ -68,6 +80,137 @@ export function basisFromDeviceOrientation(alpha, beta, gamma, screenAngle = 0) 
   };
 }
 
+export function compassCalibrationMeasurement({
+  alpha,
+  beta,
+  gamma,
+  compassHeading,
+  compassAccuracy,
+  maxTiltDegrees = COMPASS_CALIBRATION_DEFAULTS.maxTiltDegrees,
+  maxAccuracyDegrees = COMPASS_CALIBRATION_DEFAULTS.maxAccuracyDegrees,
+}) {
+  if (!Number.isFinite(compassHeading)) {
+    return { eligible: false, reason: 'unavailable', accuracy: null };
+  }
+
+  const accuracy = Number.isFinite(compassAccuracy) ? compassAccuracy : null;
+  if (accuracy !== null && (accuracy < 0 || accuracy > maxAccuracyDegrees)) {
+    return { eligible: false, reason: 'accuracy-poor', accuracy };
+  }
+
+  const matrix = eulerMatrix(alpha, beta, gamma);
+  const rearCamera = normalize(multiplyMatrixVector(matrix, { x: 0, y: 0, z: -1 }));
+  const deviceTop = normalize(multiplyMatrixVector(matrix, { x: 0, y: 1, z: 0 }));
+  const flatness = Math.max(-1, Math.min(1, Math.abs(rearCamera.z)));
+  const tiltDegrees = radToDeg(Math.acos(flatness));
+  const horizontalTopLength = Math.hypot(deviceTop.x, deviceTop.y);
+
+  if (tiltDegrees > maxTiltDegrees || horizontalTopLength < Math.cos(degToRad(maxTiltDegrees))) {
+    return { eligible: false, reason: 'needs-flat', accuracy, tiltDegrees };
+  }
+
+  const rawTopHeading = headingOf(deviceTop);
+  return {
+    eligible: true,
+    reason: 'eligible',
+    accuracy,
+    tiltDegrees,
+    rawTopHeading,
+    offset: angleDifference(normalizeDegrees(compassHeading), rawTopHeading),
+  };
+}
+
+export function circularMeanDegrees(values) {
+  if (!values.length) return null;
+  let sine = 0;
+  let cosine = 0;
+  for (const value of values) {
+    const angle = degToRad(value);
+    sine += Math.sin(angle);
+    cosine += Math.cos(angle);
+  }
+  if (Math.hypot(sine, cosine) < 1e-9) return null;
+  return normalizeSignedDegrees(radToDeg(Math.atan2(sine, cosine)));
+}
+
+export class CompassCalibrator {
+  constructor(options = {}) {
+    this.options = { ...COMPASS_CALIBRATION_DEFAULTS, ...options };
+    this.reset();
+  }
+
+  reset() {
+    this.offset = null;
+    this.cancelPending();
+  }
+
+  cancelPending() {
+    this.pendingOffsets = [];
+    this.pendingSince = null;
+  }
+
+  snapshot(state, measurement, extra = {}) {
+    return {
+      state,
+      calibrated: this.offset !== null,
+      offset: this.offset,
+      accuracy: measurement.accuracy,
+      tiltDegrees: measurement.tiltDegrees ?? null,
+      progress: 0,
+      ...extra,
+    };
+  }
+
+  observe(input, now = performance.now()) {
+    const measurement = compassCalibrationMeasurement({
+      ...input,
+      maxTiltDegrees: this.options.maxTiltDegrees,
+      maxAccuracyDegrees: this.options.maxAccuracyDegrees,
+    });
+
+    if (!measurement.eligible) {
+      this.cancelPending();
+      return this.snapshot(measurement.reason, measurement);
+    }
+
+    if (this.pendingSince === null) this.pendingSince = now;
+    const pendingMean = circularMeanDegrees(this.pendingOffsets);
+    if (
+      pendingMean !== null &&
+      Math.abs(angleDifference(measurement.offset, pendingMean)) > this.options.maxSampleDeviationDegrees
+    ) {
+      this.cancelPending();
+      this.pendingSince = now;
+    }
+
+    this.pendingOffsets.push(measurement.offset);
+    if (this.pendingOffsets.length > 60) this.pendingOffsets.shift();
+
+    const elapsed = Math.max(0, now - this.pendingSince);
+    const timeProgress = elapsed / this.options.settleMilliseconds;
+    const sampleProgress = this.pendingOffsets.length / this.options.minimumSamples;
+    const progress = Math.max(0, Math.min(1, timeProgress, sampleProgress));
+
+    if (
+      elapsed >= this.options.settleMilliseconds &&
+      this.pendingOffsets.length >= this.options.minimumSamples
+    ) {
+      const mean = circularMeanDegrees(this.pendingOffsets);
+      const stable = mean !== null && this.pendingOffsets.every(
+        (offset) => Math.abs(angleDifference(offset, mean)) <= this.options.maxSampleDeviationDegrees,
+      );
+      if (stable) {
+        this.offset = mean;
+        this.cancelPending();
+        return this.snapshot('calibrated', measurement, { progress: 1, justCalibrated: true });
+      }
+      this.cancelPending();
+    }
+
+    return this.snapshot('calibrating', measurement, { progress });
+  }
+}
+
 function rotateBasis(basis, degrees) {
   return {
     right: rotateAroundZenith(basis.right, degrees),
@@ -82,6 +225,7 @@ export class DeviceOrientationController {
     this.initialHeading = initialHeading;
     this.enabled = false;
     this.relativeOffset = null;
+    this.compassCalibrator = new CompassCalibrator();
     this.absoluteSeenAt = 0;
     this.firstSampleResolve = null;
     this.firstSampleTimer = null;
@@ -118,6 +262,7 @@ export class DeviceOrientationController {
     this.stop();
     this.enabled = true;
     this.relativeOffset = null;
+    this.compassCalibrator.reset();
     window.addEventListener('deviceorientationabsolute', this.handleOrientation, true);
     window.addEventListener('deviceorientation', this.handleOrientation, true);
     window.screen?.orientation?.addEventListener?.('change', this.handleScreenChange);
@@ -140,15 +285,17 @@ export class DeviceOrientationController {
     this.firstSampleTimer = null;
     this.enabled = false;
     this.relativeOffset = null;
+    this.compassCalibrator.reset();
   }
 
   handleScreenChange() {
     this.relativeOffset = null;
+    this.compassCalibrator.cancelPending();
   }
 
   handleOrientation(event) {
     if (!this.enabled || !Number.isFinite(event.alpha) || !Number.isFinite(event.beta) || !Number.isFinite(event.gamma)) return;
-    const absolute = event.type === 'deviceorientationabsolute' || event.absolute === true || Number.isFinite(event.webkitCompassHeading);
+    const absolute = event.type === 'deviceorientationabsolute' || event.absolute === true;
     const now = performance.now();
     if (!absolute && now - this.absoluteSeenAt < 1200) return;
     if (absolute) this.absoluteSeenAt = now;
@@ -157,10 +304,18 @@ export class DeviceOrientationController {
     let basis = basisFromDeviceOrientation(event.alpha, event.beta, event.gamma, screenAngle);
     const rawHeading = headingOf(basis.forward);
     let source = absolute ? '絶対方位' : '相対方位（開始時に補正）';
+    const calibration = this.compassCalibrator.observe({
+      alpha: event.alpha,
+      beta: event.beta,
+      gamma: event.gamma,
+      compassHeading: event.webkitCompassHeading,
+      compassAccuracy: event.webkitCompassAccuracy,
+    }, now);
 
-    if (Number.isFinite(event.webkitCompassHeading)) {
-      basis = rotateBasis(basis, event.webkitCompassHeading - rawHeading);
-      source = 'コンパス方位';
+    if (calibration.offset !== null) {
+      basis = rotateBasis(basis, calibration.offset);
+      this.relativeOffset = null;
+      source = '水平コンパス補正';
     } else if (!absolute) {
       if (this.relativeOffset === null) {
         this.relativeOffset = normalizeDegrees(this.initialHeading() - rawHeading);
@@ -168,13 +323,13 @@ export class DeviceOrientationController {
       basis = rotateBasis(basis, this.relativeOffset);
     }
 
-    this.onUpdate?.({ basis, source, absolute });
+    this.onUpdate?.({ basis, source, absolute, calibration });
     if (this.firstSampleResolve) {
       const resolve = this.firstSampleResolve;
       this.firstSampleResolve = null;
       if (this.firstSampleTimer) window.clearTimeout(this.firstSampleTimer);
       this.firstSampleTimer = null;
-      resolve({ ok: true, source });
+      resolve({ ok: true, source, calibration });
     }
   }
 }

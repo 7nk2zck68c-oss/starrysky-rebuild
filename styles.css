@@ -591,9 +591,33 @@ input:focus-visible {
 .sensor-note {
   top: calc(var(--safe-top) + 90px);
   padding: 9px 13px;
+  max-width: min(520px, calc(100vw - 28px));
+  border: 1px solid rgba(239, 185, 91, 0.24);
   border-radius: 13px;
   color: var(--amber);
+  background: rgba(7, 14, 25, 0.88);
+  text-align: center;
   font-size: 11px;
+  pointer-events: none;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.sensor-note[data-state='ready'] {
+  border-color: rgba(136, 231, 255, 0.34);
+  color: var(--cyan);
+  background: rgba(5, 27, 39, 0.9);
+}
+
+.sensor-note[data-state='calibrating'],
+.sensor-note[data-state='needs-action'] {
+  border-color: rgba(239, 185, 91, 0.38);
+  color: var(--amber);
+}
+
+.sensor-note[data-state='warning'] {
+  border-color: rgba(255, 141, 120, 0.42);
+  color: #ffb09e;
+  background: rgba(37, 16, 20, 0.9);
 }
 
 .canvas-hint {
@@ -693,4 +717,3 @@ input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }
-
