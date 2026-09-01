@@ -434,7 +434,7 @@ export const BODY_DEFINITIONS = [
     color: '#ece9db',
     radius: 7,
     kind: '衛星',
-    note: '地球の唯一の自然衛星です。ここでは元のScratch版と同じ簡易軌道モデルを使用しています。',
+    note: '地球の唯一の自然衛星です。ここでは移植元と同じ簡易軌道モデルを使用しています。',
     equatorial: moonEquatorial,
   },
   {

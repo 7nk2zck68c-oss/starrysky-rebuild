@@ -1,6 +1,6 @@
 # 今日の星空 — Starry Sky Atlas
 
-Scratchランタイムを使わず、HTML・CSS・JavaScriptだけで動く星空シミュレーターです。元プログラムの恒星カタログ（888件）、星座線（672本）、太陽・月・惑星の簡易軌道計算を引き継いでいます。
+外部ランタイムを使わず、HTML・CSS・JavaScriptだけで動く独立した星空シミュレーターです。元プログラムの恒星カタログ（888件）、星座線（672本）、太陽・月・惑星の簡易軌道計算を引き継いでいます。
 
 再構築元: [7nk2zck68c-oss/starrysky-rebuild](https://github.com/7nk2zck68c-oss/starrysky-rebuild)
 
@@ -13,6 +13,12 @@ Scratchランタイムを使わず、HTML・CSS・JavaScriptだけで動く星�
 - 1倍、60倍、1時間/秒、1日/秒のプリセット、一時停止、現在時刻への復帰
 - 現在地取得または緯度・経度の手動設定
 - スマートフォン／PC向けのレスポンシブ表示
+
+## 方向制御
+
+- 通常モードは、ドラッグした方向へ星空が追従します。
+- ジャイロモードは端末の背面カメラ方向を視線として扱い、左右・上下・画面回転に追従します。
+- 未来時刻へ進めると、天体は東から西へ移動します。
 
 ## ローカルで確認
 
@@ -41,7 +47,7 @@ npm test
 
 - `index.html` — アプリ画面とメタデータ
 - `styles.css` — レスポンシブUI
-- `src/catalog-data.js` — Scratch版から分離した恒星・星座線データ
+- `src/catalog-data.js` — アプリ内に同梱した恒星・星座線データ
 - `src/astronomy.js` — 座標変換と太陽系天体の簡易軌道計算
 - `src/orientation.js` — 端末方向センサーと方位補正
 - `src/renderer.js` — Canvas天球描画、ラベル、タップ判定

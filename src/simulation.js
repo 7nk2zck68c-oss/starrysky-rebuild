@@ -15,3 +15,4 @@ export function advanceSimulationTime(currentTime, elapsedRealMilliseconds, spee
 export function isNearRealtime(simulatedTime, now = new Date(), toleranceMilliseconds = 2000) {
   return Math.abs(simulatedTime.getTime() - now.getTime()) <= toleranceMilliseconds;
 }
+

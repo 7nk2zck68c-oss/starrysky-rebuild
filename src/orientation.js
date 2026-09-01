@@ -58,7 +58,9 @@ export function basisFromDeviceOrientation(alpha, beta, gamma, screenAngle = 0) 
   const screen = degToRad(screenAngle);
   const rightDevice = { x: Math.cos(screen), y: -Math.sin(screen), z: 0 };
   const upDevice = { x: Math.sin(screen), y: Math.cos(screen), z: 0 };
-  const forwardDevice = { x: 0, y: 0, z: 1 };
+  // Device +Z points out through the display toward the user. The sky camera
+  // looks through the rear camera, so its viewing direction is device -Z.
+  const forwardDevice = { x: 0, y: 0, z: -1 };
   return {
     right: normalize(multiplyMatrixVector(matrix, rightDevice)),
     up: normalize(multiplyMatrixVector(matrix, upDevice)),

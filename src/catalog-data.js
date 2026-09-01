@@ -1,4 +1,4 @@
-// Extracted from Today's Starry Sky v7. No Scratch runtime is required.
+// Bundled static star and constellation catalog. No external runtime is required.
 export const STARS = [
   {"id":1,"ra":101.25,"dec":-1642,"mag":-1.44,"ja":"おおいぬ座α星","en":"シリウス","color":"A"},
   {"id":2,"ra":95.75,"dec":-5201,"mag":-0.62,"ja":"りゅうこつ座α星","en":"カノープス","color":"F"},

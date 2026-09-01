@@ -23,3 +23,4 @@ test('リアルタイム近傍を判定する', () => {
   assert.equal(isNearRealtime(new Date(now.getTime() + 1500), now), true);
   assert.equal(isNearRealtime(new Date(now.getTime() + 2500), now), false);
 });
+

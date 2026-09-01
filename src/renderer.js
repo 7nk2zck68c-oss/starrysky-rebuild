@@ -51,6 +51,16 @@ export function basisDirection(basis) {
   };
 }
 
+export function applyManualDrag(heading, pitch, dx, dy, width, height) {
+  const safeWidth = Math.max(1, Number(width) || 1);
+  const safeHeight = Math.max(1, Number(height) || 1);
+  return {
+    // Direct manipulation: dragged sky content follows the pointer.
+    heading: normalizeDegrees(heading - (dx / safeWidth) * 155),
+    pitch: Math.max(-75, Math.min(88, pitch + (dy / safeHeight) * 110)),
+  };
+}
+
 export function clipLineToRect(x1, y1, x2, y2, minX, minY, maxX, maxY) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -364,8 +374,9 @@ export class SkyRenderer {
     const dx = point.x - this.pointer.x;
     const dy = point.y - this.pointer.y;
     if (Math.hypot(point.x - this.pointer.startX, point.y - this.pointer.startY) > 5) this.pointer.moved = true;
-    this.heading = normalizeDegrees(this.heading + (dx / this.width) * 155);
-    this.pitch = Math.max(-75, Math.min(88, this.pitch - (dy / this.height) * 110));
+    const direction = applyManualDrag(this.heading, this.pitch, dx, dy, this.width, this.height);
+    this.heading = direction.heading;
+    this.pitch = direction.pitch;
     this.pointer.x = point.x;
     this.pointer.y = point.y;
     this.render(true);
